@@ -1,0 +1,62 @@
+# Kraken Momentum Trader Configuration
+# WARNING: Start with paper_trading: true and validate strategy before using real capital
+
+trading:
+  pairs: ["BTC/USD", "ETH/USD"]
+  check_interval_seconds: 60
+  paper_trading: true  # CRITICAL: Keep true until strategy validated over 3+ months
+
+strategy:
+  name: "momentum"
+  momentum_threshold: 0.02  # Minimum expected gain before trading
+  min_expected_gain: 0.015  # Must exceed fees (0.32-0.52% round-trip)
+
+  # RSI Configuration
+  rsi_period: 14
+  rsi_oversold: 30
+  rsi_overbought: 70
+
+  # EMA Configuration
+  ema_short_period: 12
+  ema_long_period: 26
+
+  # Volume Configuration
+  volume_sma_period: 20
+  volume_threshold: 1.5  # Volume must be 1.5x average
+
+risk:
+  # Position Limits
+  max_position_size_usd: 500
+  max_position_percent: 5.0  # Max 5% of capital per trade
+  max_total_exposure_percent: 20.0  # Max 20% total exposure
+
+  # Stop Loss / Take Profit
+  stop_loss_percent: 5.0
+  take_profit_percent: 10.0
+
+  # Daily Limits
+  max_daily_trades: 10
+  max_daily_loss_percent: 3.0  # Pause trading if exceeded
+
+  # Circuit Breaker
+  circuit_breaker_consecutive_losses: 3
+  circuit_breaker_cooldown_hours: 4
+  max_drawdown_percent: 10.0  # Emergency exit all positions
+
+exchange:
+  name: "kraken"
+  api_version: "0"
+  rate_limit_calls_per_minute: 15
+  retry_attempts: 3
+  retry_delay_seconds: 2
+
+persistence:
+  type: "file"  # "file" for Replit, "dynamodb" for AWS
+  state_file: "data/state.json"
+  trades_file: "data/trades.json"
+  metrics_file: "data/metrics.json"
+
+logging:
+  level: "INFO"
+  format: "json"  # "json" for production, "text" for development
+  include_timestamps: true

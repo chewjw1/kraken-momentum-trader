@@ -1,0 +1,284 @@
+"""
+Volume-based indicators for momentum confirmation.
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class VolumeResult:
+    """Volume analysis result."""
+    current_volume: float
+    average_volume: float
+    volume_ratio: float  # current / average
+    is_high_volume: bool
+    is_increasing: bool
+    signal: str  # "confirming", "diverging", or "neutral"
+
+
+class VolumeIndicator:
+    """
+    Volume indicator for momentum confirmation.
+
+    Analyzes volume patterns to confirm or deny price movements:
+    - High volume on price increases = strong bullish signal
+    - High volume on price decreases = strong bearish signal
+    - Low volume on any move = weak/unreliable signal
+    """
+
+    def __init__(
+        self,
+        sma_period: int = 20,
+        high_volume_threshold: float = 1.5
+    ):
+        """
+        Initialize volume indicator.
+
+        Args:
+            sma_period: Period for volume SMA calculation.
+            high_volume_threshold: Multiple of average for "high" volume.
+        """
+        self.sma_period = sma_period
+        self.high_volume_threshold = high_volume_threshold
+
+        # State
+        self._volumes: list[float] = []
+        self._prices: list[float] = []
+
+    def calculate(
+        self,
+        volumes: list[float],
+        prices: Optional[list[float]] = None
+    ) -> Optional[VolumeResult]:
+        """
+        Calculate volume indicators.
+
+        Args:
+            volumes: List of volume values (oldest first).
+            prices: Optional list of prices for divergence detection.
+
+        Returns:
+            VolumeResult or None if insufficient data.
+        """
+        if len(volumes) < self.sma_period:
+            return None
+
+        current_volume = volumes[-1]
+        average_volume = sum(volumes[-self.sma_period:]) / self.sma_period
+
+        volume_ratio = current_volume / average_volume if average_volume > 0 else 0
+        is_high_volume = volume_ratio >= self.high_volume_threshold
+
+        # Check if volume is increasing
+        recent_avg = sum(volumes[-5:]) / 5 if len(volumes) >= 5 else current_volume
+        previous_avg = sum(volumes[-10:-5]) / 5 if len(volumes) >= 10 else average_volume
+        is_increasing = recent_avg > previous_avg
+
+        # Determine signal based on price movement if available
+        signal = "neutral"
+        if prices and len(prices) >= 2:
+            price_change = prices[-1] - prices[-2]
+
+            if is_high_volume:
+                # High volume confirms the price direction
+                signal = "confirming"
+            elif is_increasing:
+                # Increasing volume is mildly confirming
+                signal = "confirming" if abs(price_change) > 0 else "neutral"
+            else:
+                # Low/decreasing volume may indicate weakness
+                signal = "diverging" if abs(price_change) > prices[-2] * 0.01 else "neutral"
+
+        return VolumeResult(
+            current_volume=current_volume,
+            average_volume=average_volume,
+            volume_ratio=volume_ratio,
+            is_high_volume=is_high_volume,
+            is_increasing=is_increasing,
+            signal=signal
+        )
+
+    def update(self, volume: float, price: Optional[float] = None) -> Optional[VolumeResult]:
+        """
+        Update indicator with new data (streaming mode).
+
+        Args:
+            volume: New volume value.
+            price: Optional new price value.
+
+        Returns:
+            VolumeResult or None if insufficient data.
+        """
+        self._volumes.append(volume)
+        if price is not None:
+            self._prices.append(price)
+
+        # Keep only necessary data
+        max_data = self.sma_period * 3
+        if len(self._volumes) > max_data:
+            self._volumes = self._volumes[-max_data:]
+        if len(self._prices) > max_data:
+            self._prices = self._prices[-max_data:]
+
+        return self.calculate(
+            self._volumes,
+            self._prices if self._prices else None
+        )
+
+    def reset(self) -> None:
+        """Reset indicator state."""
+        self._volumes = []
+        self._prices = []
+
+
+@dataclass
+class OBVResult:
+    """On-Balance Volume result."""
+    obv: float
+    obv_ema: Optional[float]
+    trend: str  # "bullish", "bearish", or "neutral"
+
+
+class OBVIndicator:
+    """
+    On-Balance Volume (OBV) indicator.
+
+    OBV adds volume on up days and subtracts on down days,
+    creating a cumulative indicator that confirms price trends.
+    """
+
+    def __init__(self, ema_period: int = 20):
+        """
+        Initialize OBV indicator.
+
+        Args:
+            ema_period: Period for OBV EMA smoothing.
+        """
+        self.ema_period = ema_period
+        self._obv = 0.0
+        self._obv_history: list[float] = []
+        self._prev_price: Optional[float] = None
+
+    def calculate(self, prices: list[float], volumes: list[float]) -> Optional[OBVResult]:
+        """
+        Calculate OBV from price and volume data.
+
+        Args:
+            prices: List of closing prices.
+            volumes: List of volume values.
+
+        Returns:
+            OBVResult or None if insufficient data.
+        """
+        if len(prices) != len(volumes) or len(prices) < 2:
+            return None
+
+        obv = 0.0
+        obv_history = []
+
+        for i in range(1, len(prices)):
+            if prices[i] > prices[i - 1]:
+                obv += volumes[i]
+            elif prices[i] < prices[i - 1]:
+                obv -= volumes[i]
+            # OBV unchanged if price unchanged
+
+            obv_history.append(obv)
+
+        # Calculate OBV EMA if enough data
+        obv_ema = None
+        if len(obv_history) >= self.ema_period:
+            k = 2.0 / (self.ema_period + 1)
+            obv_ema = sum(obv_history[:self.ema_period]) / self.ema_period
+            for value in obv_history[self.ema_period:]:
+                obv_ema = value * k + obv_ema * (1 - k)
+
+        # Determine trend
+        trend = "neutral"
+        if obv_ema is not None:
+            if obv > obv_ema:
+                trend = "bullish"
+            elif obv < obv_ema:
+                trend = "bearish"
+
+        return OBVResult(
+            obv=obv,
+            obv_ema=obv_ema,
+            trend=trend
+        )
+
+    def update(self, price: float, volume: float) -> OBVResult:
+        """
+        Update OBV with new data (streaming mode).
+
+        Args:
+            price: New closing price.
+            volume: New volume.
+
+        Returns:
+            OBVResult.
+        """
+        if self._prev_price is not None:
+            if price > self._prev_price:
+                self._obv += volume
+            elif price < self._prev_price:
+                self._obv -= volume
+
+        self._prev_price = price
+        self._obv_history.append(self._obv)
+
+        # Keep history bounded
+        max_history = self.ema_period * 3
+        if len(self._obv_history) > max_history:
+            self._obv_history = self._obv_history[-max_history:]
+
+        # Calculate OBV EMA
+        obv_ema = None
+        if len(self._obv_history) >= self.ema_period:
+            k = 2.0 / (self.ema_period + 1)
+            obv_ema = sum(self._obv_history[:self.ema_period]) / self.ema_period
+            for value in self._obv_history[self.ema_period:]:
+                obv_ema = value * k + obv_ema * (1 - k)
+
+        # Determine trend
+        trend = "neutral"
+        if obv_ema is not None:
+            if self._obv > obv_ema:
+                trend = "bullish"
+            elif self._obv < obv_ema:
+                trend = "bearish"
+
+        return OBVResult(
+            obv=self._obv,
+            obv_ema=obv_ema,
+            trend=trend
+        )
+
+    def reset(self) -> None:
+        """Reset indicator state."""
+        self._obv = 0.0
+        self._obv_history = []
+        self._prev_price = None
+
+
+def analyze_volume(
+    volumes: list[float],
+    prices: Optional[list[float]] = None,
+    sma_period: int = 20,
+    threshold: float = 1.5
+) -> Optional[VolumeResult]:
+    """
+    Convenience function to analyze volume.
+
+    Args:
+        volumes: List of volume values.
+        prices: Optional list of prices.
+        sma_period: SMA period.
+        threshold: High volume threshold.
+
+    Returns:
+        VolumeResult or None if insufficient data.
+    """
+    indicator = VolumeIndicator(sma_period, threshold)
+    return indicator.calculate(volumes, prices)
