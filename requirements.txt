@@ -1,0 +1,27 @@
+# Kraken API Client
+krakenex==2.2.2
+pykrakenapi==0.3.2
+
+# Data Analysis and Technical Indicators
+pandas==2.1.4
+numpy==1.26.3
+ta==0.11.0
+
+# HTTP Requests
+requests==2.31.0
+
+# Async Support
+aiohttp==3.9.1
+
+# Environment Variables
+python-dotenv==1.0.0
+
+# Logging
+colorlog==6.8.0
+
+# Time and Scheduling
+schedule==1.2.0
+pytz==2023.3
+
+# Configuration
+pyyaml==6.0.1
