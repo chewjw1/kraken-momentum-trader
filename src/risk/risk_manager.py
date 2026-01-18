@@ -40,12 +40,11 @@ class RiskManager:
     """
     Central risk management coordinator.
 
-    Enforces all non-negotiable risk safeguards:
-    - Max 5% of capital per trade
-    - Max 20% total exposure
-    - 3% daily loss limit → pause trading
-    - 3 consecutive losses → 4-hour cooldown
-    - 10% drawdown → emergency exit all positions
+    Enforces risk safeguards:
+    - Max 40% of capital per trade (configurable)
+    - Max 200% total exposure (for Martingale pyramiding)
+    - 5 consecutive losses → 2-hour cooldown (circuit breaker)
+    - Martingale: max 4 entries, 1.25x multiplier, 5% drop trigger
     """
 
     def __init__(
@@ -74,14 +73,10 @@ class RiskManager:
 
         self.circuit_breaker = CircuitBreaker(
             consecutive_loss_limit=config.circuit_breaker_consecutive_losses,
-            cooldown_hours=config.circuit_breaker_cooldown_hours,
-            max_drawdown_percent=config.max_drawdown_percent
+            cooldown_hours=config.circuit_breaker_cooldown_hours
         )
 
-        # Daily tracking
-        self._daily_trade_count = 0
-        self._daily_loss = 0.0
-        self._current_date: Optional[str] = None
+        # Exposure tracking
         self._current_exposure = 0.0
 
         # Capital tracking
@@ -90,8 +85,7 @@ class RiskManager:
         logger.info(
             "Risk manager initialized",
             max_position_percent=config.max_position_percent,
-            max_exposure_percent=config.max_total_exposure_percent,
-            daily_loss_limit=config.max_daily_loss_percent
+            max_exposure_percent=config.max_total_exposure_percent
         )
 
     def set_capital(self, capital: float) -> None:
@@ -120,29 +114,12 @@ class RiskManager:
         Returns:
             RiskCheck indicating if trading is allowed.
         """
-        self._check_date_reset()
-
         # Check circuit breaker
         if not self.circuit_breaker.is_trading_allowed():
             state = self.circuit_breaker.get_state()
             return RiskCheck(
                 allowed=False,
                 reason=f"Circuit breaker active: {state.state.value}"
-            )
-
-        # Check daily trade limit
-        if self._daily_trade_count >= self.config.max_daily_trades:
-            return RiskCheck(
-                allowed=False,
-                reason=f"Daily trade limit reached: {self._daily_trade_count}/{self.config.max_daily_trades}"
-            )
-
-        # Check daily loss limit
-        max_daily_loss = self._total_capital * (self.config.max_daily_loss_percent / 100)
-        if self._daily_loss >= max_daily_loss:
-            return RiskCheck(
-                allowed=False,
-                reason=f"Daily loss limit reached: ${self._daily_loss:.2f}/${max_daily_loss:.2f}"
             )
 
         # Check exposure limit
@@ -207,6 +184,96 @@ class RiskManager:
             adjusted_size=adjusted_size
         )
 
+    def can_add_to_position(
+        self,
+        additional_size_usd: float,
+        current_position_exposure: float,
+        num_entries: int,
+        pair: str
+    ) -> RiskCheck:
+        """
+        Check if Martingale add-on is permitted.
+
+        Args:
+            additional_size_usd: Size of add-on in USD.
+            current_position_exposure: Current position exposure in USD.
+            num_entries: Current number of entries in position.
+            pair: Trading pair.
+
+        Returns:
+            RiskCheck with adjusted size if needed.
+        """
+        martingale = self.config.martingale
+
+        # Check if Martingale is enabled
+        if not martingale.enabled:
+            return RiskCheck(
+                allowed=False,
+                reason="Martingale is disabled"
+            )
+
+        # Check max entries
+        if num_entries >= martingale.max_entries:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Max Martingale entries reached: {num_entries}/{martingale.max_entries}"
+            )
+
+        # Check circuit breaker
+        if not self.circuit_breaker.is_trading_allowed():
+            state = self.circuit_breaker.get_state()
+            return RiskCheck(
+                allowed=False,
+                reason=f"Circuit breaker active: {state.state.value}"
+            )
+
+        # Check total exposure after add-on
+        max_exposure = self._total_capital * (self.config.max_total_exposure_percent / 100)
+        new_total_exposure = current_position_exposure + additional_size_usd
+
+        if new_total_exposure > max_exposure:
+            # Adjust size to fit within limits
+            available = max_exposure - current_position_exposure
+            if available <= 0:
+                return RiskCheck(
+                    allowed=False,
+                    reason=f"Max exposure reached: ${current_position_exposure:.2f}/${max_exposure:.2f}"
+                )
+
+            logger.risk_event(
+                event_type="martingale_size_reduced",
+                details=f"Reduced from ${additional_size_usd:.2f} to ${available:.2f}",
+                pair=pair
+            )
+
+            return RiskCheck(
+                allowed=True,
+                reason="Martingale add-on approved (size adjusted)",
+                adjusted_size=available
+            )
+
+        return RiskCheck(
+            allowed=True,
+            reason="Martingale add-on approved",
+            adjusted_size=additional_size_usd
+        )
+
+    def calculate_martingale_size(
+        self,
+        last_entry_size_usd: float
+    ) -> float:
+        """
+        Calculate the size for next Martingale entry.
+
+        Args:
+            last_entry_size_usd: Size of the most recent entry.
+
+        Returns:
+            Size for next entry in USD.
+        """
+        multiplier = self.config.martingale.size_multiplier
+        return last_entry_size_usd * multiplier
+
     def record_trade_result(self, pnl: float, pair: str) -> None:
         """
         Record trade result for risk tracking.
@@ -215,16 +282,11 @@ class RiskManager:
             pnl: Trade profit/loss.
             pair: Trading pair.
         """
-        self._check_date_reset()
-        self._daily_trade_count += 1
-
         if pnl < 0:
-            self._daily_loss += abs(pnl)
             self.circuit_breaker.record_loss()
             logger.risk_event(
                 event_type="loss_recorded",
                 details=f"Loss of ${abs(pnl):.2f} on {pair}",
-                daily_loss=self._daily_loss,
                 consecutive_losses=self.circuit_breaker.get_state().consecutive_losses
             )
         else:
@@ -233,20 +295,12 @@ class RiskManager:
         # Update metrics
         self.metrics.record_daily_return(pnl / self._total_capital * 100)
 
-        # Check for emergency stop
-        metrics = self.metrics.get_metrics()
-        if metrics.max_drawdown_percent >= self.config.max_drawdown_percent:
-            self.circuit_breaker.trigger_emergency_stop(
-                f"Max drawdown {metrics.max_drawdown_percent:.1f}% exceeded limit"
-            )
-            logger.risk_event(
-                event_type="emergency_stop",
-                details=f"Drawdown of {metrics.max_drawdown_percent:.1f}% exceeded {self.config.max_drawdown_percent}%"
-            )
-
     def should_emergency_exit(self) -> tuple[bool, str]:
         """
         Check if all positions should be closed immediately.
+
+        Note: Emergency exit is now only triggered by manual circuit breaker
+        activation, not by drawdown limits.
 
         Returns:
             Tuple of (should_exit, reason).
@@ -254,10 +308,6 @@ class RiskManager:
         state = self.circuit_breaker.get_state()
         if state.state == CircuitState.EMERGENCY:
             return True, state.trigger_reason or "Emergency stop activated"
-
-        metrics = self.metrics.get_metrics()
-        if metrics.max_drawdown_percent >= self.config.max_drawdown_percent:
-            return True, f"Drawdown {metrics.max_drawdown_percent:.1f}% exceeded limit"
 
         return False, ""
 
@@ -268,35 +318,17 @@ class RiskManager:
         Returns:
             RiskLimits with current status.
         """
-        self._check_date_reset()
-
-        max_daily_loss = self._total_capital * (self.config.max_daily_loss_percent / 100)
         max_exposure = self._total_capital * (self.config.max_total_exposure_percent / 100)
 
         return RiskLimits(
-            daily_trades_remaining=max(0, self.config.max_daily_trades - self._daily_trade_count),
-            daily_loss_remaining=max(0, max_daily_loss - self._daily_loss),
+            daily_trades_remaining=-1,  # No limit
+            daily_loss_remaining=-1,  # No limit
             max_position_size=self.position_sizer.calculate_max_position(self._total_capital),
             current_exposure=self._current_exposure,
             max_exposure=max_exposure,
             exposure_available=max(0, max_exposure - self._current_exposure),
             circuit_breaker_state=self.circuit_breaker.get_state().state
         )
-
-    def _check_date_reset(self) -> None:
-        """Reset daily counters if date has changed."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        if self._current_date != today:
-            if self._current_date is not None:
-                logger.info(
-                    f"New trading day: resetting daily counters",
-                    previous_trades=self._daily_trade_count,
-                    previous_loss=self._daily_loss
-                )
-            self._current_date = today
-            self._daily_trade_count = 0
-            self._daily_loss = 0.0
 
     def reset_circuit_breaker(self) -> None:
         """Manually reset the circuit breaker (use with caution)."""
@@ -308,9 +340,6 @@ class RiskManager:
         return {
             "total_capital": self._total_capital,
             "current_exposure": self._current_exposure,
-            "daily_trade_count": self._daily_trade_count,
-            "daily_loss": self._daily_loss,
-            "current_date": self._current_date,
             "circuit_breaker": self.circuit_breaker.to_dict(),
         }
 
@@ -318,9 +347,6 @@ class RiskManager:
         """Restore state from dictionary."""
         self._total_capital = data.get("total_capital", 10000.0)
         self._current_exposure = data.get("current_exposure", 0.0)
-        self._daily_trade_count = data.get("daily_trade_count", 0)
-        self._daily_loss = data.get("daily_loss", 0.0)
-        self._current_date = data.get("current_date")
 
         if "circuit_breaker" in data:
             self.circuit_breaker.from_dict(data["circuit_breaker"])

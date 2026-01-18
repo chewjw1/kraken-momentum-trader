@@ -25,16 +25,70 @@ class TradingState(Enum):
 
 
 @dataclass
-class TradingPosition:
-    """Current trading position."""
-    pair: str
-    side: str  # "long" or "short"
-    entry_price: float
+class PositionEntry:
+    """Individual entry in a position (for Martingale support)."""
+    price: float
     size: float
+    size_usd: float
     entry_time: datetime
     order_id: str
-    stop_loss: float
-    take_profit: float
+
+
+@dataclass
+class TradingPosition:
+    """Current trading position with multi-entry support for Martingale."""
+    pair: str
+    side: str  # "long" or "short"
+    entries: list  # List of PositionEntry objects
+    peak_price: float  # Highest price reached (for trailing stop)
+    trailing_stop_active: bool = False
+
+    @property
+    def entry_price(self) -> float:
+        """Weighted average entry price across all entries."""
+        if not self.entries:
+            return 0.0
+        total_size = sum(e.size for e in self.entries)
+        if total_size == 0:
+            return 0.0
+        weighted_sum = sum(e.price * e.size for e in self.entries)
+        return weighted_sum / total_size
+
+    @property
+    def size(self) -> float:
+        """Total position size across all entries."""
+        return sum(e.size for e in self.entries)
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Total USD invested across all entries."""
+        return sum(e.size_usd for e in self.entries)
+
+    @property
+    def entry_time(self) -> datetime:
+        """Time of first entry."""
+        if not self.entries:
+            return datetime.now(timezone.utc)
+        return self.entries[0].entry_time
+
+    @property
+    def order_id(self) -> str:
+        """Order ID of first entry (for compatibility)."""
+        if not self.entries:
+            return ""
+        return self.entries[0].order_id
+
+    @property
+    def num_entries(self) -> int:
+        """Number of entries in position."""
+        return len(self.entries)
+
+    @property
+    def last_entry_size_usd(self) -> float:
+        """Size of the most recent entry in USD."""
+        if not self.entries:
+            return 0.0
+        return self.entries[-1].size_usd
 
 
 @dataclass
@@ -179,9 +233,8 @@ class TradingStateMachine:
         side: str,
         entry_price: float,
         size: float,
-        order_id: str,
-        stop_loss: float,
-        take_profit: float
+        size_usd: float,
+        order_id: str
     ) -> bool:
         """
         Record an opened position.
@@ -190,26 +243,112 @@ class TradingStateMachine:
             pair: Trading pair.
             side: Position side ("long" or "short").
             entry_price: Entry price.
-            size: Position size.
+            size: Position size in units.
+            size_usd: Position size in USD.
             order_id: Order ID.
-            stop_loss: Stop loss price.
-            take_profit: Take profit price.
         """
+        initial_entry = PositionEntry(
+            price=entry_price,
+            size=size,
+            size_usd=size_usd,
+            entry_time=datetime.now(timezone.utc),
+            order_id=order_id
+        )
+
         self._position = TradingPosition(
             pair=pair,
             side=side,
-            entry_price=entry_price,
-            size=size,
-            entry_time=datetime.now(timezone.utc),
-            order_id=order_id,
-            stop_loss=stop_loss,
-            take_profit=take_profit
+            entries=[initial_entry],
+            peak_price=entry_price,  # Initialize peak at entry
+            trailing_stop_active=False
         )
 
         return self.transition_to(
             TradingState.IN_POSITION,
-            f"Position opened: {side} {size} {pair} @ {entry_price}"
+            f"Position opened: {side} {size:.6f} {pair} @ {entry_price:.2f}"
         )
+
+    def add_to_position(
+        self,
+        entry_price: float,
+        size: float,
+        size_usd: float,
+        order_id: str
+    ) -> bool:
+        """
+        Add to existing position (Martingale).
+
+        Args:
+            entry_price: Entry price for this add-on.
+            size: Position size in units.
+            size_usd: Position size in USD.
+            order_id: Order ID.
+
+        Returns:
+            True if add was successful.
+        """
+        if not self._position:
+            logger.warning("Cannot add to position: no position exists")
+            return False
+
+        new_entry = PositionEntry(
+            price=entry_price,
+            size=size,
+            size_usd=size_usd,
+            entry_time=datetime.now(timezone.utc),
+            order_id=order_id
+        )
+
+        self._position.entries.append(new_entry)
+
+        # Reset trailing stop when adding (new average price)
+        self._position.trailing_stop_active = False
+        # Update peak to current price if adding on dip
+        if entry_price > self._position.peak_price:
+            self._position.peak_price = entry_price
+
+        logger.info(
+            f"Added to position: +{size:.6f} @ {entry_price:.2f} "
+            f"(total entries: {self._position.num_entries}, "
+            f"avg price: {self._position.entry_price:.2f})",
+            pair=self._position.pair,
+            num_entries=self._position.num_entries,
+            total_size=self._position.size,
+            avg_entry=self._position.entry_price
+        )
+
+        return True
+
+    def update_peak_price(self, current_price: float) -> bool:
+        """
+        Update peak price for trailing stop tracking.
+
+        Args:
+            current_price: Current market price.
+
+        Returns:
+            True if peak was updated.
+        """
+        if not self._position:
+            return False
+
+        if self._position.side == "long" and current_price > self._position.peak_price:
+            self._position.peak_price = current_price
+            return True
+        elif self._position.side == "short" and current_price < self._position.peak_price:
+            self._position.peak_price = current_price
+            return True
+
+        return False
+
+    def activate_trailing_stop(self) -> None:
+        """Activate the trailing stop for current position."""
+        if self._position:
+            self._position.trailing_stop_active = True
+            logger.info(
+                f"Trailing stop activated at peak price {self._position.peak_price}",
+                pair=self._position.pair
+            )
 
     def start_exit(self, reason: str = "") -> bool:
         """Begin exiting current position."""
@@ -307,12 +446,18 @@ class TradingStateMachine:
             data["position"] = {
                 "pair": self._position.pair,
                 "side": self._position.side,
-                "entry_price": self._position.entry_price,
-                "size": self._position.size,
-                "entry_time": self._position.entry_time.isoformat(),
-                "order_id": self._position.order_id,
-                "stop_loss": self._position.stop_loss,
-                "take_profit": self._position.take_profit,
+                "entries": [
+                    {
+                        "price": e.price,
+                        "size": e.size,
+                        "size_usd": e.size_usd,
+                        "entry_time": e.entry_time.isoformat(),
+                        "order_id": e.order_id,
+                    }
+                    for e in self._position.entries
+                ],
+                "peak_price": self._position.peak_price,
+                "trailing_stop_active": self._position.trailing_stop_active,
             }
 
         return data
@@ -335,15 +480,37 @@ class TradingStateMachine:
 
         if data.get("position"):
             pos = data["position"]
+
+            # Handle both old format (single entry) and new format (entries list)
+            if "entries" in pos:
+                entries = [
+                    PositionEntry(
+                        price=e["price"],
+                        size=e["size"],
+                        size_usd=e.get("size_usd", e["price"] * e["size"]),
+                        entry_time=datetime.fromisoformat(e["entry_time"]),
+                        order_id=e["order_id"],
+                    )
+                    for e in pos["entries"]
+                ]
+            else:
+                # Legacy format - convert single entry to entries list
+                entries = [
+                    PositionEntry(
+                        price=pos["entry_price"],
+                        size=pos["size"],
+                        size_usd=pos["entry_price"] * pos["size"],
+                        entry_time=datetime.fromisoformat(pos["entry_time"]),
+                        order_id=pos["order_id"],
+                    )
+                ]
+
             self._position = TradingPosition(
                 pair=pos["pair"],
                 side=pos["side"],
-                entry_price=pos["entry_price"],
-                size=pos["size"],
-                entry_time=datetime.fromisoformat(pos["entry_time"]),
-                order_id=pos["order_id"],
-                stop_loss=pos["stop_loss"],
-                take_profit=pos["take_profit"],
+                entries=entries,
+                peak_price=pos.get("peak_price", entries[0].price if entries else 0),
+                trailing_stop_active=pos.get("trailing_stop_active", False),
             )
         else:
             self._position = None

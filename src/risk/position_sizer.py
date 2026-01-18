@@ -24,16 +24,16 @@ class PositionSizer:
     """
     Position sizing calculator using fixed percentage risk.
 
-    Implements conservative position sizing:
-    - Max 5% of capital per trade
+    Implements position sizing:
+    - Max 40% of capital per trade (configurable)
     - Can use Kelly criterion for optimal sizing (optional)
     - Adjusts for volatility (optional)
     """
 
     def __init__(
         self,
-        max_position_percent: float = 5.0,
-        max_position_usd: float = 500.0,
+        max_position_percent: float = 40.0,
+        max_position_usd: float = 5000.0,
         risk_per_trade_percent: float = 1.0
     ):
         """
@@ -220,7 +220,7 @@ def calculate_position_size(
     capital: float,
     entry_price: float,
     stop_loss_percent: float,
-    max_position_percent: float = 5.0
+    max_position_percent: float = 40.0
 ) -> float:
     """
     Convenience function to calculate position size.

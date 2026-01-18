@@ -125,65 +125,54 @@ class BaseStrategy(ABC):
         pass
 
     @abstractmethod
-    def get_stop_loss_price(self, entry_price: float, side: str) -> float:
+    def check_trailing_stop(
+        self,
+        position: Position,
+        current_price: float,
+        peak_price: float,
+        trailing_stop_active: bool
+    ) -> tuple[bool, bool, str]:
         """
-        Calculate stop loss price for a position.
+        Check trailing stop conditions.
 
         Args:
-            entry_price: Position entry price.
-            side: Position side ("long" or "short").
+            position: Current position.
+            current_price: Current market price.
+            peak_price: Highest price reached since entry.
+            trailing_stop_active: Whether trailing stop has been activated.
 
         Returns:
-            Stop loss price.
-        """
-        pass
-
-    @abstractmethod
-    def get_take_profit_price(self, entry_price: float, side: str) -> float:
-        """
-        Calculate take profit price for a position.
-
-        Args:
-            entry_price: Position entry price.
-            side: Position side ("long" or "short").
-
-        Returns:
-            Take profit price.
+            Tuple of (should_close, should_activate_trailing, reason).
         """
         pass
 
     def should_close_position(
         self,
         position: Position,
-        market_data: MarketData
-    ) -> tuple[bool, str]:
+        market_data: MarketData,
+        peak_price: float = None,
+        trailing_stop_active: bool = False
+    ) -> tuple[bool, bool, str]:
         """
         Check if an open position should be closed.
 
         Args:
             position: Current position.
             market_data: Current market data.
+            peak_price: Highest price reached (for trailing stop).
+            trailing_stop_active: Whether trailing stop is active.
 
         Returns:
-            Tuple of (should_close, reason).
+            Tuple of (should_close, should_activate_trailing, reason).
         """
         current_price = market_data.ticker.last if market_data.ticker else position.current_price
 
-        # Check stop loss
-        stop_loss = self.get_stop_loss_price(position.entry_price, position.side)
-        if position.side == "long" and current_price <= stop_loss:
-            return True, f"Stop loss hit: {current_price:.2f} <= {stop_loss:.2f}"
-        if position.side == "short" and current_price >= stop_loss:
-            return True, f"Stop loss hit: {current_price:.2f} >= {stop_loss:.2f}"
+        if peak_price is None:
+            peak_price = position.entry_price
 
-        # Check take profit
-        take_profit = self.get_take_profit_price(position.entry_price, position.side)
-        if position.side == "long" and current_price >= take_profit:
-            return True, f"Take profit hit: {current_price:.2f} >= {take_profit:.2f}"
-        if position.side == "short" and current_price <= take_profit:
-            return True, f"Take profit hit: {current_price:.2f} <= {take_profit:.2f}"
-
-        return False, ""
+        return self.check_trailing_stop(
+            position, current_price, peak_price, trailing_stop_active
+        )
 
     def reset(self) -> None:
         """Reset strategy state."""

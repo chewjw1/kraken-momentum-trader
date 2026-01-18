@@ -210,17 +210,50 @@ class Trader:
         # Check if we have a position in this pair
         current_position = self._get_current_position(pair, market_data)
 
+        # Update peak price if we have a position
+        if current_position and self.state_machine.has_position:
+            current_price = market_data.ticker.last if market_data.ticker else 0
+            self.state_machine.update_peak_price(current_price)
+
         # Start analysis
         self.state_machine.start_analysis()
 
-        # Get signal from strategy
+        # Get peak price and trailing stop status for strategy
+        peak_price = None
+        trailing_stop_active = False
+        if self.state_machine.has_position:
+            pos = self.state_machine.position
+            peak_price = pos.peak_price
+            trailing_stop_active = pos.trailing_stop_active
+
+        # Get signal from strategy (pass trailing stop info)
         signal = self.strategy.analyze(market_data, current_position)
+
+        # Check if trailing stop should be activated
+        if signal.indicators.get("_should_activate_trailing", False):
+            self.state_machine.activate_trailing_stop()
 
         logger.debug(
             f"Signal for {pair}: {signal.signal_type.value}",
             strength=signal.strength,
             reason=signal.reason
         )
+
+        # Check for Martingale add-on opportunity if we have a position
+        if current_position and self.state_machine.has_position:
+            current_price = market_data.ticker.last if market_data.ticker else 0
+            avg_entry = self.state_machine.position.entry_price
+
+            should_add, add_reason = self.strategy.should_add_to_position(
+                market_data=market_data,
+                avg_entry_price=avg_entry,
+                current_price=current_price
+            )
+
+            if should_add:
+                self._add_to_position(market_data, add_reason)
+                self.state_machine.analysis_complete(has_signal=False)
+                return
 
         # Handle signal
         if signal.is_actionable():
@@ -344,15 +377,11 @@ class Trader:
         position_size_usd = size_check.adjusted_size
         position_size_units = position_size_usd / price
 
-        # Calculate stop loss and take profit
-        stop_loss = self.strategy.get_stop_loss_price(price, "long")
-        take_profit = self.strategy.get_take_profit_price(price, "long")
-
         logger.info(
             f"Entering position: BUY {position_size_units:.6f} {pair} @ {price:.2f}",
             size_usd=position_size_usd,
-            stop_loss=stop_loss,
-            take_profit=take_profit
+            trailing_stop_activation=self.settings.risk.trailing_stop_activation_percent,
+            trailing_stop_percent=self.settings.risk.trailing_stop_percent
         )
 
         self.state_machine.analysis_complete(has_signal=True)
@@ -366,15 +395,14 @@ class Trader:
                 volume=position_size_units
             )
 
-            # Update state
+            # Update state (no stop_loss/take_profit - using trailing stop)
             self.state_machine.open_position(
                 pair=pair,
                 side="long",
                 entry_price=order.price or price,
                 size=position_size_units,
-                order_id=order.order_id,
-                stop_loss=stop_loss,
-                take_profit=take_profit
+                size_usd=position_size_usd,
+                order_id=order.order_id
             )
 
             # Update exposure
@@ -395,6 +423,90 @@ class Trader:
         except Exception as e:
             logger.error(f"Failed to place entry order: {e}")
             self.state_machine.set_error(str(e))
+
+    def _add_to_position(self, market_data: MarketData, reason: str) -> None:
+        """
+        Add to existing position (Martingale).
+
+        Args:
+            market_data: Current market data.
+            reason: Reason for adding.
+        """
+        position = self.state_machine.position
+        if not position:
+            logger.warning("Cannot add to position: no position exists")
+            return
+
+        pair = position.pair
+        current_price = market_data.ticker.last if market_data.ticker else 0
+
+        # Calculate add-on size based on last entry
+        last_entry_size_usd = position.last_entry_size_usd
+        add_on_size_usd = self.risk_manager.calculate_martingale_size(last_entry_size_usd)
+
+        # Check if add-on is allowed
+        add_check = self.risk_manager.can_add_to_position(
+            additional_size_usd=add_on_size_usd,
+            current_position_exposure=position.total_cost_usd,
+            num_entries=position.num_entries,
+            pair=pair
+        )
+
+        if not add_check.allowed:
+            logger.info(f"Martingale add-on rejected: {add_check.reason}")
+            return
+
+        add_on_size_usd = add_check.adjusted_size
+        add_on_size_units = add_on_size_usd / current_price
+
+        logger.info(
+            f"Martingale add-on: BUY {add_on_size_units:.6f} {pair} @ {current_price:.2f}",
+            entry_num=position.num_entries + 1,
+            size_usd=add_on_size_usd,
+            current_avg=position.entry_price,
+            reason=reason
+        )
+
+        try:
+            # Place order
+            order = self.client.place_order(
+                pair=pair,
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                volume=add_on_size_units
+            )
+
+            # Add to position
+            self.state_machine.add_to_position(
+                entry_price=order.price or current_price,
+                size=add_on_size_units,
+                size_usd=add_on_size_usd,
+                order_id=order.order_id
+            )
+
+            # Update exposure
+            new_exposure = position.total_cost_usd
+            self.risk_manager.update_exposure(new_exposure)
+
+            # Log trade
+            self.trade_logger.log_trade(
+                action="martingale_add",
+                pair=pair,
+                side="buy",
+                price=order.price or current_price,
+                amount=add_on_size_units,
+                order_id=order.order_id,
+                signal_strength=1.0,
+                signal_reason=reason
+            )
+
+            logger.info(
+                f"Martingale add-on complete: new avg entry {position.entry_price:.2f}, "
+                f"total size {position.size:.6f}, entries {position.num_entries}"
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to place Martingale add-on order: {e}")
 
     def _exit_position(
         self,
@@ -617,11 +729,14 @@ class Trader:
                 "side": state.position.side,
                 "entry_price": state.position.entry_price,
                 "size": state.position.size,
+                "peak_price": state.position.peak_price,
+                "trailing_stop_active": state.position.trailing_stop_active,
+                "num_entries": state.position.num_entries,
+                "total_cost_usd": state.position.total_cost_usd,
             } if state.position else None,
             "risk_limits": {
-                "daily_trades_remaining": risk_limits.daily_trades_remaining,
-                "daily_loss_remaining": risk_limits.daily_loss_remaining,
                 "exposure_available": risk_limits.exposure_available,
+                "max_position_size": risk_limits.max_position_size,
                 "circuit_breaker": risk_limits.circuit_breaker_state.value,
             },
             "metrics": {

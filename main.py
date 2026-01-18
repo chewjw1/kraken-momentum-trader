@@ -7,12 +7,13 @@ A cryptocurrency momentum trading application that:
 - Connects to Kraken API for automated trading
 - Uses momentum strategy with proper risk management
 
-IMPORTANT: Start with paper trading for 3+ months before any real capital.
+IMPORTANT: Start with paper trading for 2+ weeks before any real capital.
 """
 
 import argparse
 import signal
 import sys
+from datetime import datetime, timezone
 from typing import Optional
 
 from src.config.settings import get_settings, reload_settings
@@ -36,13 +37,13 @@ def setup_signal_handlers(trader: Trader) -> None:
 def print_banner() -> None:
     """Print application banner."""
     banner = """
-╔══════════════════════════════════════════════════════════════╗
-║           KRAKEN MOMENTUM TRADER                             ║
-║                                                              ║
-║  WARNING: Trading cryptocurrencies involves significant      ║
-║  risk of loss. Paper trade for 3+ months before using        ║
-║  real capital.                                               ║
-╚══════════════════════════════════════════════════════════════╝
+================================================================
+           KRAKEN MOMENTUM TRADER
+================================================================
+  WARNING: Trading cryptocurrencies involves significant
+  risk of loss. Paper trade for 2+ weeks before using
+  real capital.
+================================================================
     """
     print(banner)
 
@@ -59,14 +60,17 @@ def print_status(trader: Trader) -> None:
         pos = status['position']
         print(f"  - Pair: {pos['pair']}")
         print(f"  - Side: {pos['side']}")
-        print(f"  - Entry: ${pos['entry_price']:.2f}")
-        print(f"  - Size: {pos['size']:.6f}")
+        print(f"  - Avg Entry: ${pos['entry_price']:.2f}")
+        print(f"  - Total Size: {pos['size']:.6f}")
+        print(f"  - Total Cost: ${pos['total_cost_usd']:.2f}")
+        print(f"  - Entries: {pos['num_entries']} (Martingale)")
+        print(f"  - Peak Price: ${pos['peak_price']:.2f}")
+        print(f"  - Trailing Stop: {'Active' if pos['trailing_stop_active'] else 'Inactive'}")
 
     print(f"\n=== Risk Limits ===")
     limits = status['risk_limits']
-    print(f"Daily Trades Remaining: {limits['daily_trades_remaining']}")
-    print(f"Daily Loss Remaining: ${limits['daily_loss_remaining']:.2f}")
     print(f"Exposure Available: ${limits['exposure_available']:.2f}")
+    print(f"Max Position Size: ${limits['max_position_size']:.2f}")
     print(f"Circuit Breaker: {limits['circuit_breaker']}")
 
     print(f"\n=== Performance ===")
@@ -188,7 +192,7 @@ def validate_strategy(config_path: Optional[str] = None) -> int:
     is_valid, reason = tracker.is_strategy_validated(
         min_sharpe=1.0,
         max_drawdown=20.0,
-        min_trades=100
+        min_trades=20
     )
 
     metrics = tracker.get_metrics()
@@ -231,15 +235,99 @@ def show_config() -> None:
     print("\n[Risk]")
     print(f"  Max Position: ${settings.risk.max_position_size_usd} ({settings.risk.max_position_percent}%)")
     print(f"  Max Exposure: {settings.risk.max_total_exposure_percent}%")
-    print(f"  Stop Loss: {settings.risk.stop_loss_percent}%")
-    print(f"  Take Profit: {settings.risk.take_profit_percent}%")
-    print(f"  Max Daily Loss: {settings.risk.max_daily_loss_percent}%")
-    print(f"  Max Daily Trades: {settings.risk.max_daily_trades}")
-    print(f"  Circuit Breaker: {settings.risk.circuit_breaker_consecutive_losses} losses")
+    print(f"  Initial Stop Loss: {settings.risk.initial_stop_loss_percent}% (0=disabled)")
+    print(f"  Trailing Stop: {settings.risk.trailing_stop_percent}% from peak")
+    print(f"  Trailing Activation: {settings.risk.trailing_stop_activation_percent}% profit")
+    print(f"  Circuit Breaker: {settings.risk.circuit_breaker_consecutive_losses} losses -> {settings.risk.circuit_breaker_cooldown_hours}h cooldown")
+
+    print("\n[Martingale]")
+    mg = settings.risk.martingale
+    print(f"  Enabled: {mg.enabled}")
+    print(f"  Max Entries: {mg.max_entries}")
+    print(f"  Size Multiplier: {mg.size_multiplier}x")
+    print(f"  Add-on Trigger: {mg.add_on_drop_percent}% drop from avg entry")
+    print(f"  Require RSI Oversold: {mg.require_rsi_oversold}")
+    print(f"  Require EMA Trend: {mg.require_ema_trend}")
 
     print("\n[Exchange]")
     print(f"  Name: {settings.exchange.name}")
     print(f"  Rate Limit: {settings.exchange.rate_limit_calls_per_minute} calls/min")
+
+
+def run_backtest(
+    pair: str = "BTC/USD",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    interval: int = 60,
+    capital: float = 10000.0,
+    export: bool = False
+) -> int:
+    """
+    Run a backtest on historical data.
+
+    Args:
+        pair: Trading pair (e.g., "BTC/USD").
+        start: Start date (YYYY-MM-DD).
+        end: End date (YYYY-MM-DD).
+        interval: Candle interval in minutes.
+        capital: Initial capital.
+        export: Whether to export results to files.
+
+    Returns:
+        Exit code.
+    """
+    from datetime import timedelta
+    from src.backtest import BacktestConfig, BacktestRunner
+
+    print_banner()
+    print("=== BACKTEST MODE ===\n")
+
+    # Parse dates
+    if end:
+        end_date = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        end_date = datetime.now(timezone.utc)
+
+    if start:
+        start_date = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        # Default to 6 months ago
+        start_date = end_date - timedelta(days=180)
+
+    print(f"Pair: {pair}")
+    print(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print(f"Interval: {interval} minutes")
+    print(f"Initial Capital: ${capital:,.2f}")
+    print()
+
+    try:
+        # Create config
+        config = BacktestConfig(
+            pair=pair,
+            start_date=start_date,
+            end_date=end_date,
+            interval=interval,
+            initial_capital=capital
+        )
+
+        # Run backtest
+        runner = BacktestRunner(config)
+        results = runner.run()
+
+        # Print report
+        runner.print_report()
+
+        # Export if requested
+        if export:
+            runner.export_results()
+
+        # Return 0 if profitable, 1 otherwise
+        net_pnl = results.metrics.total_pnl - results.metrics.total_fees
+        return 0 if net_pnl > 0 else 1
+
+    except Exception as e:
+        print(f"Backtest error: {e}")
+        return 1
 
 
 def main() -> int:
@@ -249,10 +337,15 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                    # Run the trader
-  python main.py --config config.yaml  # Use specific config
-  python main.py --validate         # Validate strategy metrics
-  python main.py --show-config      # Show current config
+  python main.py                              # Run the trader
+  python main.py --config config.yaml         # Use specific config
+  python main.py --validate                   # Validate strategy metrics
+  python main.py --show-config                # Show current config
+
+Backtest Examples:
+  python main.py --backtest --pair BTC/USD --start 2024-01-01 --end 2024-06-30
+  python main.py --backtest --pair ETH/USD --start 2023-01-01 --end 2023-12-31 --interval 240
+  python main.py --backtest --pair BTC/USD --export  # Export results to CSV/JSON
         """
     )
 
@@ -271,6 +364,43 @@ Examples:
         help="Show current configuration"
     )
 
+    # Backtest arguments
+    parser.add_argument(
+        "--backtest", "-b",
+        action="store_true",
+        help="Run backtest on historical data"
+    )
+    parser.add_argument(
+        "--pair", "-p",
+        default="BTC/USD",
+        help="Trading pair for backtest (default: BTC/USD)"
+    )
+    parser.add_argument(
+        "--start", "-s",
+        help="Start date for backtest (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--end", "-e",
+        help="End date for backtest (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--interval", "-i",
+        type=int,
+        default=60,
+        help="Candle interval in minutes (default: 60)"
+    )
+    parser.add_argument(
+        "--capital",
+        type=float,
+        default=10000.0,
+        help="Initial capital for backtest (default: 10000)"
+    )
+    parser.add_argument(
+        "--export",
+        action="store_true",
+        help="Export backtest results to CSV/JSON files"
+    )
+
     args = parser.parse_args()
 
     if args.show_config:
@@ -279,6 +409,16 @@ Examples:
 
     if args.validate:
         return validate_strategy(args.config)
+
+    if args.backtest:
+        return run_backtest(
+            pair=args.pair,
+            start=args.start,
+            end=args.end,
+            interval=args.interval,
+            capital=args.capital,
+            export=args.export
+        )
 
     return run_trader(args.config)
 

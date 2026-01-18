@@ -4,7 +4,7 @@
 
 A cryptocurrency momentum trading application that connects to the Kraken exchange for automated trading using a multi-indicator momentum strategy with comprehensive risk management.
 
-**CRITICAL**: Start with paper trading for 3+ months before using real capital. Cryptocurrency trading involves significant risk of loss.
+**CRITICAL**: Start with paper trading for 2+ weeks before using real capital. Cryptocurrency trading involves significant risk of loss.
 
 ## Architecture
 
@@ -114,21 +114,31 @@ Multi-indicator confirmation using:
 - Volume above average (confirmation)
 
 **Exit Conditions (ANY):**
-- Take-profit hit (10%)
-- Stop-loss hit (5%)
+- Trailing stop triggered (price drops 5% from peak after 5% profit)
 - RSI > 70 (overbought)
+- Bearish EMA crossover detected
 
 ### 5. Risk Manager (`src/risk/risk_manager.py`)
 
-**Non-negotiable safeguards:**
+**Risk safeguards:**
 
 | Rule | Limit | Action |
 |------|-------|--------|
-| Max position size | 5% of capital | Reduce position |
-| Max total exposure | 20% of capital | Block new trades |
-| Daily loss limit | 3% of capital | Pause trading |
-| Consecutive losses | 3 losses | 4-hour cooldown |
-| Max drawdown | 10% | Emergency exit all |
+| Max position size | 40% of capital / $5,000 | Reduce position |
+| Max total exposure | 200% of capital | Block new trades |
+| Consecutive losses | 5 losses | 2-hour cooldown |
+
+**Trailing Stop Strategy:**
+- No initial stop loss (position held until profitable)
+- Trailing stop activates after 5% profit
+- Exit when price drops 5% from peak
+
+**Martingale Position Building:**
+- If price drops 5% from average entry, add to position
+- Each add-on is 1.25x the size of the previous entry
+- Maximum 4 total entries (initial + 3 add-ons)
+- Add-ons require RSI to be oversold (< 30)
+- Exposure limit (200%) prevents unlimited pyramiding
 
 ### 6. Circuit Breaker (`src/risk/circuit_breaker.py`)
 
@@ -155,11 +165,23 @@ strategy:
   ema_long_period: 26
 
 risk:
-  max_position_size_usd: 500
-  max_position_percent: 5.0
-  stop_loss_percent: 5.0
-  take_profit_percent: 10.0
-  max_daily_loss_percent: 3.0
+  max_position_size_usd: 5000
+  max_position_percent: 40.0
+  max_total_exposure_percent: 200.0  # Increased for Martingale
+  use_trailing_stop: true
+  trailing_stop_percent: 5.0
+  trailing_stop_activation_percent: 5.0
+  circuit_breaker_consecutive_losses: 5
+  circuit_breaker_cooldown_hours: 2
+
+  # Martingale configuration
+  martingale:
+    enabled: true
+    max_entries: 4              # Initial + 3 add-ons
+    size_multiplier: 1.25       # Each add-on is 1.25x previous
+    add_on_drop_percent: 5.0    # Add when price drops 5% from avg
+    require_rsi_oversold: true  # Must meet RSI condition
+    require_ema_trend: false    # EMA check optional
 ```
 
 ## Running the Application
@@ -205,12 +227,12 @@ pytest tests/unit/ -v
 
 Before considering live trading:
 
-1. **Paper trade for minimum 3 months**
+1. **Paper trade for minimum 2 weeks**
 2. **Achieve these metrics:**
    - Sharpe ratio > 1.0
    - Max drawdown < 20%
    - Win rate > 40% with positive expectancy
-   - Minimum 100 trades
+   - Minimum 20 trades
 
 Use `python main.py --validate` to check current metrics.
 

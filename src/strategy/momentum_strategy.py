@@ -7,10 +7,11 @@ Entry conditions (all must be met):
 - Volume above average (confirming signal)
 - Expected gain > fee threshold
 
-Exit conditions (any):
-- Take profit hit (default 10%)
-- Stop loss hit (default 5%)
+Exit conditions (trailing stop strategy):
+- Trailing stop activates after position gains 5%
+- Exit when price drops 5% from peak
 - RSI > overbought threshold (default 70)
+- Bearish EMA crossover
 """
 
 from dataclasses import dataclass
@@ -84,11 +85,27 @@ class MomentumStrategy(BaseStrategy):
             high_volume_threshold=config.volume_threshold
         )
 
-        # Risk parameters (from risk config)
+        # Trailing stop parameters (from risk config)
         risk_config = get_settings().risk
-        self.stop_loss_percent = risk_config.stop_loss_percent
-        self.take_profit_percent = risk_config.take_profit_percent
+        self.use_trailing_stop = risk_config.use_trailing_stop
+        self.trailing_stop_percent = risk_config.trailing_stop_percent
+        self.trailing_stop_activation_percent = risk_config.trailing_stop_activation_percent
+        self.initial_stop_loss_percent = risk_config.initial_stop_loss_percent
         self.min_expected_gain = config.min_expected_gain
+
+        # Martingale parameters
+        self.martingale_config = risk_config.martingale
+        # Handle case where martingale might be a dict (from YAML loading)
+        if isinstance(self.martingale_config, dict):
+            self.martingale_enabled = self.martingale_config.get("enabled", True)
+            self.martingale_add_on_drop = self.martingale_config.get("add_on_drop_percent", 5.0)
+            self.martingale_require_rsi = self.martingale_config.get("require_rsi_oversold", True)
+            self.martingale_require_ema = self.martingale_config.get("require_ema_trend", False)
+        else:
+            self.martingale_enabled = self.martingale_config.enabled
+            self.martingale_add_on_drop = self.martingale_config.add_on_drop_percent
+            self.martingale_require_rsi = self.martingale_config.require_rsi_oversold
+            self.martingale_require_ema = self.martingale_config.require_ema_trend
 
         self._is_initialized = True
 
@@ -252,23 +269,35 @@ class MomentumStrategy(BaseStrategy):
         position: Position,
         signals: MomentumSignals,
         current_price: float,
-        timestamp: datetime
+        timestamp: datetime,
+        peak_price: float = None,
+        trailing_stop_active: bool = False
     ) -> Signal:
         """Analyze for exit signal on existing position."""
         rsi = signals.rsi
         ema = signals.ema
 
-        # Check stop loss / take profit first
-        should_close, close_reason = self.should_close_position(position, market_data)
+        if peak_price is None:
+            peak_price = position.entry_price
+
+        # Check trailing stop first
+        should_close, should_activate, close_reason = self.check_trailing_stop(
+            position, current_price, peak_price, trailing_stop_active
+        )
+
+        # Store activation flag in signal metadata for caller to handle
+        indicators = self._signals_to_dict(signals)
+        indicators["_should_activate_trailing"] = should_activate
+
         if should_close:
             return Signal(
                 signal_type=SignalType.CLOSE_LONG if position.side == "long" else SignalType.CLOSE_SHORT,
                 pair=market_data.pair,
-                strength=1.0,  # Stop loss / take profit are always executed
+                strength=1.0,
                 price=current_price,
                 timestamp=timestamp,
                 reason=close_reason,
-                indicators=self._signals_to_dict(signals)
+                indicators=indicators
             )
 
         # Check for RSI overbought exit (for long positions)
@@ -281,7 +310,7 @@ class MomentumStrategy(BaseStrategy):
                 price=current_price,
                 timestamp=timestamp,
                 reason=reason,
-                indicators=self._signals_to_dict(signals)
+                indicators=indicators
             )
 
         # Check for trend reversal
@@ -294,33 +323,85 @@ class MomentumStrategy(BaseStrategy):
                 price=current_price,
                 timestamp=timestamp,
                 reason=reason,
-                indicators=self._signals_to_dict(signals)
+                indicators=indicators
             )
 
+        # Calculate profit for status
+        profit_percent = ((current_price - position.entry_price) / position.entry_price) * 100
+        peak_profit = ((peak_price - position.entry_price) / position.entry_price) * 100
+
         # Hold position
+        status = f"RSI={rsi.value:.1f}, PnL={profit_percent:.2f}%, Peak={peak_profit:.2f}%"
+        if trailing_stop_active or should_activate:
+            status += " [Trailing Stop Active]"
+
         return Signal(
             signal_type=SignalType.HOLD,
             pair=market_data.pair,
             strength=0.0,
             price=current_price,
             timestamp=timestamp,
-            reason=f"Hold position: RSI={rsi.value:.1f}, PnL={position.unrealized_pnl_percent:.2f}%",
-            indicators=self._signals_to_dict(signals)
+            reason=f"Hold position: {status}",
+            indicators=indicators
         )
 
-    def get_stop_loss_price(self, entry_price: float, side: str) -> float:
-        """Calculate stop loss price."""
-        if side == "long":
-            return entry_price * (1 - self.stop_loss_percent / 100)
-        else:
-            return entry_price * (1 + self.stop_loss_percent / 100)
+    def check_trailing_stop(
+        self,
+        position: Position,
+        current_price: float,
+        peak_price: float,
+        trailing_stop_active: bool
+    ) -> tuple[bool, bool, str]:
+        """
+        Check trailing stop conditions.
 
-    def get_take_profit_price(self, entry_price: float, side: str) -> float:
-        """Calculate take profit price."""
+        Args:
+            position: Current position.
+            current_price: Current market price.
+            peak_price: Highest price reached since entry.
+            trailing_stop_active: Whether trailing stop has been activated.
+
+        Returns:
+            Tuple of (should_close, should_activate_trailing, reason).
+        """
+        entry_price = position.entry_price
+        side = position.side
+
+        # Calculate current profit percentage
         if side == "long":
-            return entry_price * (1 + self.take_profit_percent / 100)
+            profit_percent = ((current_price - entry_price) / entry_price) * 100
+            peak_profit_percent = ((peak_price - entry_price) / entry_price) * 100
+            drop_from_peak_percent = ((peak_price - current_price) / peak_price) * 100
         else:
-            return entry_price * (1 - self.take_profit_percent / 100)
+            profit_percent = ((entry_price - current_price) / entry_price) * 100
+            peak_profit_percent = ((entry_price - peak_price) / entry_price) * 100
+            drop_from_peak_percent = ((current_price - peak_price) / peak_price) * 100
+
+        # Check if we should activate trailing stop (reached activation threshold)
+        should_activate = False
+        if not trailing_stop_active and peak_profit_percent >= self.trailing_stop_activation_percent:
+            should_activate = True
+            logger.info(
+                f"Trailing stop activation threshold reached: {peak_profit_percent:.2f}% profit",
+                pair=position.pair,
+                activation_threshold=self.trailing_stop_activation_percent
+            )
+
+        # Check if trailing stop should trigger exit
+        if trailing_stop_active or should_activate:
+            if drop_from_peak_percent >= self.trailing_stop_percent:
+                reason = (
+                    f"Trailing stop hit: price dropped {drop_from_peak_percent:.2f}% from peak "
+                    f"(peak: {peak_price:.2f}, current: {current_price:.2f})"
+                )
+                return True, should_activate, reason
+
+        # Check initial stop loss if configured (for when trade goes immediately negative)
+        if self.initial_stop_loss_percent > 0 and profit_percent <= -self.initial_stop_loss_percent:
+            reason = f"Initial stop loss hit: {profit_percent:.2f}% loss"
+            return True, should_activate, reason
+
+        return False, should_activate, ""
 
     def _signals_to_dict(self, signals: MomentumSignals) -> dict:
         """Convert signals to dictionary for logging."""
@@ -353,6 +434,61 @@ class MomentumStrategy(BaseStrategy):
             }
 
         return result
+
+    def should_add_to_position(
+        self,
+        market_data: MarketData,
+        avg_entry_price: float,
+        current_price: float
+    ) -> tuple[bool, str]:
+        """
+        Check if Martingale add-on conditions are met.
+
+        Args:
+            market_data: Current market data.
+            avg_entry_price: Current average entry price.
+            current_price: Current market price.
+
+        Returns:
+            Tuple of (should_add, reason).
+        """
+        if not self.martingale_enabled:
+            return False, "Martingale disabled"
+
+        # Calculate drop from average entry
+        drop_percent = ((avg_entry_price - current_price) / avg_entry_price) * 100
+
+        if drop_percent < self.martingale_add_on_drop:
+            return False, f"Price drop {drop_percent:.2f}% < trigger {self.martingale_add_on_drop}%"
+
+        # Calculate signals for indicator checks
+        signals = self._calculate_signals(market_data)
+
+        # Check RSI if required
+        if self.martingale_require_rsi:
+            if not signals.rsi or not signals.rsi.is_oversold:
+                rsi_val = signals.rsi.value if signals.rsi else "N/A"
+                return False, f"RSI not oversold ({rsi_val})"
+
+        # Check EMA trend if required
+        if self.martingale_require_ema:
+            if not signals.ema or not signals.ema.price_above_ema:
+                return False, "Price not above EMA"
+
+        # All conditions met
+        reason = f"Martingale trigger: price dropped {drop_percent:.2f}% from avg entry"
+        if self.martingale_require_rsi:
+            reason += f", RSI={signals.rsi.value:.1f}"
+
+        logger.info(
+            f"Martingale add-on signal: {reason}",
+            pair=market_data.pair,
+            avg_entry=avg_entry_price,
+            current_price=current_price,
+            drop_percent=drop_percent
+        )
+
+        return True, reason
 
     def reset(self) -> None:
         """Reset strategy state."""

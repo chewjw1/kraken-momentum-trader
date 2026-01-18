@@ -47,8 +47,7 @@ class CircuitBreaker:
     def __init__(
         self,
         consecutive_loss_limit: int = 3,
-        cooldown_hours: int = 4,
-        max_drawdown_percent: float = 10.0
+        cooldown_hours: int = 4
     ):
         """
         Initialize circuit breaker.
@@ -56,11 +55,9 @@ class CircuitBreaker:
         Args:
             consecutive_loss_limit: Number of consecutive losses before cooldown.
             cooldown_hours: Hours to pause trading after trigger.
-            max_drawdown_percent: Drawdown percentage to trigger emergency stop.
         """
         self.consecutive_loss_limit = consecutive_loss_limit
         self.cooldown_hours = cooldown_hours
-        self.max_drawdown_percent = max_drawdown_percent
 
         # State
         self._state = CircuitState.CLOSED

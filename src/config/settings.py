@@ -42,21 +42,38 @@ class StrategyConfig:
 
 
 @dataclass
+class MartingaleConfig:
+    """Martingale strategy configuration."""
+    enabled: bool = True
+    max_entries: int = 4  # Maximum total entries (initial + add-ons)
+    size_multiplier: float = 1.25  # Each add-on is 1.25x previous
+    add_on_drop_percent: float = 5.0  # Add when price drops 5% from avg entry
+    require_rsi_oversold: bool = True  # Check RSI before adding
+    require_ema_trend: bool = False  # Check EMA trend before adding
+
+
+@dataclass
 class RiskConfig:
     """Risk management configuration."""
-    max_position_size_usd: float = 500.0
-    max_position_percent: float = 5.0
-    max_total_exposure_percent: float = 20.0
+    max_position_size_usd: float = 5000.0
+    max_position_percent: float = 40.0
+    max_total_exposure_percent: float = 200.0  # Increased for Martingale pyramiding
 
-    stop_loss_percent: float = 5.0
-    take_profit_percent: float = 10.0
+    # Trailing stop configuration
+    use_trailing_stop: bool = True
+    trailing_stop_percent: float = 5.0  # Exit when price drops this % from peak
+    trailing_stop_activation_percent: float = 5.0  # Minimum profit before trailing activates
+    initial_stop_loss_percent: float = 0.0  # Initial stop loss (0 = disabled)
 
-    max_daily_trades: int = 10
-    max_daily_loss_percent: float = 3.0
+    # Martingale configuration
+    martingale: MartingaleConfig = None
 
-    circuit_breaker_consecutive_losses: int = 3
-    circuit_breaker_cooldown_hours: int = 4
-    max_drawdown_percent: float = 10.0
+    circuit_breaker_consecutive_losses: int = 5  # Increased for Martingale
+    circuit_breaker_cooldown_hours: int = 2  # Reduced for Martingale
+
+    def __post_init__(self):
+        if self.martingale is None:
+            self.martingale = MartingaleConfig()
 
 
 @dataclass
@@ -184,9 +201,20 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
             settings.strategy = _dict_to_config(
                 data.get("strategy"), StrategyConfig, settings.strategy
             )
+            # Handle risk config with nested martingale
+            risk_data = data.get("risk", {})
+            # Extract martingale data before processing risk config
+            martingale_data = risk_data.pop("martingale", None) if isinstance(risk_data, dict) else None
             settings.risk = _dict_to_config(
-                data.get("risk"), RiskConfig, settings.risk
+                risk_data, RiskConfig, settings.risk
             )
+            # Handle nested martingale config separately
+            if martingale_data and isinstance(martingale_data, dict):
+                # Create fresh MartingaleConfig and apply dict values
+                martingale_config = MartingaleConfig()
+                settings.risk.martingale = _dict_to_config(
+                    martingale_data, MartingaleConfig, martingale_config
+                )
             settings.exchange = _dict_to_config(
                 data.get("exchange"), ExchangeConfig, settings.exchange
             )

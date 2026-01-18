@@ -4,7 +4,7 @@
 trading:
   pairs: ["BTC/USD", "ETH/USD"]
   check_interval_seconds: 60
-  paper_trading: true  # CRITICAL: Keep true until strategy validated over 3+ months
+  paper_trading: true  # CRITICAL: Keep true until strategy validated over 2+ weeks
 
 strategy:
   name: "momentum"
@@ -26,22 +26,28 @@ strategy:
 
 risk:
   # Position Limits
-  max_position_size_usd: 500
-  max_position_percent: 5.0  # Max 5% of capital per trade
-  max_total_exposure_percent: 20.0  # Max 20% total exposure
+  max_position_size_usd: 5000
+  max_position_percent: 40.0  # Max 40% of capital per initial trade
+  max_total_exposure_percent: 200.0  # Max 200% total exposure (for Martingale)
 
-  # Stop Loss / Take Profit
-  stop_loss_percent: 5.0
-  take_profit_percent: 10.0
+  # Trailing Stop Configuration
+  use_trailing_stop: true
+  trailing_stop_percent: 5.0  # Exit when price drops 5% from peak
+  trailing_stop_activation_percent: 5.0  # Only activate after 5% profit
+  initial_stop_loss_percent: 0.0  # No initial stop loss (0 = disabled)
 
-  # Daily Limits
-  max_daily_trades: 10
-  max_daily_loss_percent: 3.0  # Pause trading if exceeded
+  # Martingale Configuration
+  martingale:
+    enabled: true
+    max_entries: 4  # Initial + 3 add-ons
+    size_multiplier: 1.25  # Each add-on is 1.25x previous
+    add_on_drop_percent: 5.0  # Add when price drops 5% from avg entry
+    require_rsi_oversold: true  # Must have RSI < 30 to add
+    require_ema_trend: false  # Don't require EMA confirmation for adds
 
-  # Circuit Breaker
-  circuit_breaker_consecutive_losses: 3
-  circuit_breaker_cooldown_hours: 4
-  max_drawdown_percent: 10.0  # Emergency exit all positions
+  # Circuit Breaker (adjusted for Martingale)
+  circuit_breaker_consecutive_losses: 5  # Increased from 3
+  circuit_breaker_cooldown_hours: 2  # Reduced from 4
 
 exchange:
   name: "kraken"
