@@ -127,16 +127,11 @@ def run_trader(config_path: Optional[str] = None) -> int:
     print(f"Check Interval: {settings.trading.check_interval_seconds}s")
     print()
 
-    # Safety check
+    # Live trading warning
     if not settings.trading.paper_trading:
         print("=" * 60)
-        print("WARNING: LIVE TRADING MODE ENABLED")
-        print("Real money will be used for trades!")
+        print("LIVE TRADING MODE - Real money will be used")
         print("=" * 60)
-        response = input("Type 'CONFIRM' to continue: ")
-        if response.strip() != "CONFIRM":
-            print("Aborting.")
-            return 1
 
     try:
         # Create and run trader
