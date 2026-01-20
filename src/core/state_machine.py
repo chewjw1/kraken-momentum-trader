@@ -1,5 +1,6 @@
 """
 Trading state machine for managing trading lifecycle.
+Supports multiple simultaneous positions across different pairs.
 """
 
 from dataclasses import dataclass, field
@@ -15,10 +16,10 @@ logger = get_logger(__name__)
 class TradingState(Enum):
     """Trading lifecycle states."""
     INITIALIZING = "initializing"
-    IDLE = "idle"  # No position, waiting for signals
+    IDLE = "idle"  # Waiting for signals (may have positions)
     ANALYZING = "analyzing"  # Analyzing market for entry
     ENTERING = "entering"  # Placing entry order
-    IN_POSITION = "in_position"  # Holding a position
+    IN_POSITION = "in_position"  # Holding one or more positions
     EXITING = "exiting"  # Placing exit order
     ERROR = "error"  # Error state, requires intervention
     STOPPED = "stopped"  # Trading halted
@@ -96,7 +97,7 @@ class StateMachineState:
     """Complete state machine state."""
     current_state: TradingState
     previous_state: Optional[TradingState]
-    position: Optional[TradingPosition]
+    positions: dict  # pair -> TradingPosition
     last_state_change: datetime
     error_message: Optional[str]
     pending_order_id: Optional[str]
@@ -105,14 +106,15 @@ class StateMachineState:
 class TradingStateMachine:
     """
     State machine for managing trading lifecycle.
+    Supports multiple simultaneous positions across different pairs.
 
     States:
     - INITIALIZING: Starting up, loading state
-    - IDLE: No position, waiting for entry signals
+    - IDLE: Waiting for entry signals (may have open positions)
     - ANALYZING: Evaluating market conditions
     - ENTERING: Placing entry order
-    - IN_POSITION: Holding an open position
-    - EXITING: Closing position
+    - IN_POSITION: Holding one or more open positions
+    - EXITING: Closing a position
     - ERROR: Error occurred, needs intervention
     - STOPPED: Trading manually stopped
 
@@ -122,9 +124,12 @@ class TradingStateMachine:
     - ANALYZING -> ENTERING: Entry signal detected
     - ANALYZING -> IDLE: No signal
     - ENTERING -> IN_POSITION: Order filled
+    - ENTERING -> IDLE: Order filled but no positions remain
     - ENTERING -> ERROR: Order failed
     - IN_POSITION -> EXITING: Exit signal or stop/take profit
-    - EXITING -> IDLE: Exit complete
+    - IN_POSITION -> ANALYZING: Check other pairs
+    - EXITING -> IDLE: All positions closed
+    - EXITING -> IN_POSITION: Some positions remain
     - EXITING -> ERROR: Exit failed
     - Any -> ERROR: Unhandled error
     - Any -> STOPPED: Manual stop
@@ -132,21 +137,21 @@ class TradingStateMachine:
 
     # Valid state transitions
     VALID_TRANSITIONS = {
-        TradingState.INITIALIZING: [TradingState.IDLE, TradingState.ERROR, TradingState.STOPPED],
-        TradingState.IDLE: [TradingState.ANALYZING, TradingState.ERROR, TradingState.STOPPED],
-        TradingState.ANALYZING: [TradingState.ENTERING, TradingState.IDLE, TradingState.ERROR, TradingState.STOPPED],
+        TradingState.INITIALIZING: [TradingState.IDLE, TradingState.IN_POSITION, TradingState.ERROR, TradingState.STOPPED],
+        TradingState.IDLE: [TradingState.ANALYZING, TradingState.IN_POSITION, TradingState.ERROR, TradingState.STOPPED],
+        TradingState.ANALYZING: [TradingState.ENTERING, TradingState.IDLE, TradingState.IN_POSITION, TradingState.ERROR, TradingState.STOPPED],
         TradingState.ENTERING: [TradingState.IN_POSITION, TradingState.IDLE, TradingState.ERROR, TradingState.STOPPED],
-        TradingState.IN_POSITION: [TradingState.EXITING, TradingState.ERROR, TradingState.STOPPED],
+        TradingState.IN_POSITION: [TradingState.EXITING, TradingState.ANALYZING, TradingState.IDLE, TradingState.ERROR, TradingState.STOPPED],
         TradingState.EXITING: [TradingState.IDLE, TradingState.IN_POSITION, TradingState.ERROR, TradingState.STOPPED],
-        TradingState.ERROR: [TradingState.IDLE, TradingState.STOPPED],
-        TradingState.STOPPED: [TradingState.IDLE],
+        TradingState.ERROR: [TradingState.IDLE, TradingState.IN_POSITION, TradingState.STOPPED],
+        TradingState.STOPPED: [TradingState.IDLE, TradingState.IN_POSITION],
     }
 
     def __init__(self):
         """Initialize the state machine."""
         self._state = TradingState.INITIALIZING
         self._previous_state: Optional[TradingState] = None
-        self._position: Optional[TradingPosition] = None
+        self._positions: dict[str, TradingPosition] = {}  # pair -> position
         self._last_state_change = datetime.now(timezone.utc)
         self._error_message: Optional[str] = None
         self._pending_order_id: Optional[str] = None
@@ -158,14 +163,39 @@ class TradingStateMachine:
         return self._state
 
     @property
+    def positions(self) -> dict[str, TradingPosition]:
+        """Get all open positions."""
+        return self._positions
+
+    @property
     def position(self) -> Optional[TradingPosition]:
-        """Get current position."""
-        return self._position
+        """Get first position (for backward compatibility)."""
+        if self._positions:
+            return next(iter(self._positions.values()))
+        return None
 
     @property
     def has_position(self) -> bool:
-        """Check if there's an open position."""
-        return self._position is not None
+        """Check if there are any open positions."""
+        return len(self._positions) > 0
+
+    def has_position_for_pair(self, pair: str) -> bool:
+        """Check if there's an open position for a specific pair."""
+        return pair in self._positions
+
+    def get_position(self, pair: str) -> Optional[TradingPosition]:
+        """Get position for a specific pair."""
+        return self._positions.get(pair)
+
+    @property
+    def total_exposure_usd(self) -> float:
+        """Get total USD exposure across all positions."""
+        return sum(pos.total_cost_usd for pos in self._positions.values())
+
+    @property
+    def position_count(self) -> int:
+        """Get number of open positions."""
+        return len(self._positions)
 
     def transition_to(self, new_state: TradingState, reason: str = "") -> bool:
         """
@@ -196,7 +226,7 @@ class TradingStateMachine:
         logger.info(
             f"State transition: {self._previous_state.value} -> {new_state.value}",
             reason=reason,
-            position=self._position.pair if self._position else None
+            open_positions=list(self._positions.keys())
         )
 
         # Notify listeners
@@ -210,6 +240,9 @@ class TradingStateMachine:
 
     def initialize_complete(self) -> bool:
         """Mark initialization as complete."""
+        # Go to IN_POSITION if we restored positions, otherwise IDLE
+        if self._positions:
+            return self.transition_to(TradingState.IN_POSITION, "Initialization complete with open positions")
         return self.transition_to(TradingState.IDLE, "Initialization complete")
 
     def start_analysis(self) -> bool:
@@ -225,6 +258,9 @@ class TradingStateMachine:
         """
         if has_signal:
             return self.transition_to(TradingState.ENTERING, "Entry signal detected")
+        # Return to IN_POSITION if we have positions, otherwise IDLE
+        if self._positions:
+            return self.transition_to(TradingState.IN_POSITION, "No entry signal, maintaining positions")
         return self.transition_to(TradingState.IDLE, "No entry signal")
 
     def open_position(
@@ -247,6 +283,10 @@ class TradingStateMachine:
             size_usd: Position size in USD.
             order_id: Order ID.
         """
+        if pair in self._positions:
+            logger.warning(f"Position already exists for {pair}, use add_to_position instead")
+            return False
+
         initial_entry = PositionEntry(
             price=entry_price,
             size=size,
@@ -255,7 +295,7 @@ class TradingStateMachine:
             order_id=order_id
         )
 
-        self._position = TradingPosition(
+        self._positions[pair] = TradingPosition(
             pair=pair,
             side=side,
             entries=[initial_entry],
@@ -263,13 +303,21 @@ class TradingStateMachine:
             trailing_stop_active=False
         )
 
-        return self.transition_to(
-            TradingState.IN_POSITION,
-            f"Position opened: {side} {size:.6f} {pair} @ {entry_price:.2f}"
-        )
+        # Only transition if not already in position
+        if self._state != TradingState.IN_POSITION:
+            return self.transition_to(
+                TradingState.IN_POSITION,
+                f"Position opened: {side} {size:.6f} {pair} @ {entry_price:.2f} (total positions: {len(self._positions)})"
+            )
+        else:
+            logger.info(
+                f"Position opened: {side} {size:.6f} {pair} @ {entry_price:.2f} (total positions: {len(self._positions)})"
+            )
+            return True
 
     def add_to_position(
         self,
+        pair: str,
         entry_price: float,
         size: float,
         size_usd: float,
@@ -279,6 +327,7 @@ class TradingStateMachine:
         Add to existing position (Martingale).
 
         Args:
+            pair: Trading pair.
             entry_price: Entry price for this add-on.
             size: Position size in units.
             size_usd: Position size in USD.
@@ -287,9 +336,11 @@ class TradingStateMachine:
         Returns:
             True if add was successful.
         """
-        if not self._position:
-            logger.warning("Cannot add to position: no position exists")
+        if pair not in self._positions:
+            logger.warning(f"Cannot add to position: no position exists for {pair}")
             return False
+
+        position = self._positions[pair]
 
         new_entry = PositionEntry(
             price=entry_price,
@@ -299,84 +350,110 @@ class TradingStateMachine:
             order_id=order_id
         )
 
-        self._position.entries.append(new_entry)
+        position.entries.append(new_entry)
 
         # Reset trailing stop when adding (new average price)
-        self._position.trailing_stop_active = False
+        position.trailing_stop_active = False
         # Update peak to current price if adding on dip
-        if entry_price > self._position.peak_price:
-            self._position.peak_price = entry_price
+        if entry_price > position.peak_price:
+            position.peak_price = entry_price
 
         logger.info(
             f"Added to position: +{size:.6f} @ {entry_price:.2f} "
-            f"(total entries: {self._position.num_entries}, "
-            f"avg price: {self._position.entry_price:.2f})",
-            pair=self._position.pair,
-            num_entries=self._position.num_entries,
-            total_size=self._position.size,
-            avg_entry=self._position.entry_price
+            f"(total entries: {position.num_entries}, "
+            f"avg price: {position.entry_price:.2f})",
+            pair=pair,
+            num_entries=position.num_entries,
+            total_size=position.size,
+            avg_entry=position.entry_price
         )
 
         return True
 
-    def update_peak_price(self, current_price: float) -> bool:
+    def update_peak_price(self, pair: str, current_price: float) -> bool:
         """
         Update peak price for trailing stop tracking.
 
         Args:
+            pair: Trading pair.
             current_price: Current market price.
 
         Returns:
             True if peak was updated.
         """
-        if not self._position:
+        if pair not in self._positions:
             return False
 
-        if self._position.side == "long" and current_price > self._position.peak_price:
-            self._position.peak_price = current_price
+        position = self._positions[pair]
+
+        if position.side == "long" and current_price > position.peak_price:
+            position.peak_price = current_price
             return True
-        elif self._position.side == "short" and current_price < self._position.peak_price:
-            self._position.peak_price = current_price
+        elif position.side == "short" and current_price < position.peak_price:
+            position.peak_price = current_price
             return True
 
         return False
 
-    def activate_trailing_stop(self) -> None:
-        """Activate the trailing stop for current position."""
-        if self._position:
-            self._position.trailing_stop_active = True
+    def activate_trailing_stop(self, pair: str) -> None:
+        """Activate the trailing stop for a specific position."""
+        if pair in self._positions:
+            self._positions[pair].trailing_stop_active = True
             logger.info(
-                f"Trailing stop activated at peak price {self._position.peak_price}",
-                pair=self._position.pair
+                f"Trailing stop activated at peak price {self._positions[pair].peak_price}",
+                pair=pair
             )
 
-    def start_exit(self, reason: str = "") -> bool:
-        """Begin exiting current position."""
-        if not self._position:
-            logger.warning("Cannot exit: no position")
+    def start_exit(self, pair: str, reason: str = "") -> bool:
+        """Begin exiting a specific position."""
+        if pair not in self._positions:
+            logger.warning(f"Cannot exit: no position for {pair}")
             return False
-        return self.transition_to(TradingState.EXITING, reason or "Exiting position")
+        return self.transition_to(TradingState.EXITING, reason or f"Exiting {pair} position")
 
-    def close_position(self, exit_price: float, pnl: float) -> TradingPosition:
+    def close_position(self, pair: str, exit_price: float, pnl: float) -> Optional[TradingPosition]:
         """
         Record a closed position.
 
         Args:
+            pair: Trading pair.
             exit_price: Exit price.
             pnl: Realized P&L.
 
         Returns:
-            The closed position.
+            The closed position or None if not found.
         """
-        closed_position = self._position
-        self._position = None
+        if pair not in self._positions:
+            logger.warning(f"Cannot close: no position for {pair}")
+            return None
 
-        self.transition_to(
-            TradingState.IDLE,
-            f"Position closed @ {exit_price}, P&L: ${pnl:.2f}"
-        )
+        closed_position = self._positions.pop(pair)
+
+        # Transition based on remaining positions
+        if self._positions:
+            # Already in IN_POSITION state, just log
+            logger.info(
+                f"Closed {pair} @ {exit_price}, P&L: ${pnl:.2f} (remaining positions: {len(self._positions)})"
+            )
+        else:
+            self.transition_to(
+                TradingState.IDLE,
+                f"Closed {pair} @ {exit_price}, P&L: ${pnl:.2f} (no positions remaining)"
+            )
 
         return closed_position
+
+    def close_all_positions(self) -> list[TradingPosition]:
+        """
+        Close all positions (for emergency exit).
+
+        Returns:
+            List of closed positions.
+        """
+        closed = list(self._positions.values())
+        self._positions.clear()
+        self.transition_to(TradingState.IDLE, "All positions closed")
+        return closed
 
     def set_error(self, error_message: str) -> bool:
         """
@@ -392,6 +469,8 @@ class TradingStateMachine:
         """Attempt to recover from error state."""
         if self._state != TradingState.ERROR:
             return False
+        if self._positions:
+            return self.transition_to(TradingState.IN_POSITION, "Error recovery with positions")
         return self.transition_to(TradingState.IDLE, "Error recovery")
 
     def stop(self, reason: str = "Manual stop") -> bool:
@@ -402,6 +481,8 @@ class TradingStateMachine:
         """Resume trading from stopped state."""
         if self._state != TradingState.STOPPED:
             return False
+        if self._positions:
+            return self.transition_to(TradingState.IN_POSITION, "Resuming trading with positions")
         return self.transition_to(TradingState.IDLE, "Resuming trading")
 
     def set_pending_order(self, order_id: str) -> None:
@@ -426,7 +507,7 @@ class TradingStateMachine:
         return StateMachineState(
             current_state=self._state,
             previous_state=self._previous_state,
-            position=self._position,
+            positions=self._positions.copy(),
             last_state_change=self._last_state_change,
             error_message=self._error_message,
             pending_order_id=self._pending_order_id
@@ -440,12 +521,13 @@ class TradingStateMachine:
             "last_state_change": self._last_state_change.isoformat(),
             "error_message": self._error_message,
             "pending_order_id": self._pending_order_id,
+            "positions": {}
         }
 
-        if self._position:
-            data["position"] = {
-                "pair": self._position.pair,
-                "side": self._position.side,
+        for pair, position in self._positions.items():
+            data["positions"][pair] = {
+                "pair": position.pair,
+                "side": position.side,
                 "entries": [
                     {
                         "price": e.price,
@@ -454,10 +536,10 @@ class TradingStateMachine:
                         "entry_time": e.entry_time.isoformat(),
                         "order_id": e.order_id,
                     }
-                    for e in self._position.entries
+                    for e in position.entries
                 ],
-                "peak_price": self._position.peak_price,
-                "trailing_stop_active": self._position.trailing_stop_active,
+                "peak_price": position.peak_price,
+                "trailing_stop_active": position.trailing_stop_active,
             }
 
         return data
@@ -478,10 +560,35 @@ class TradingStateMachine:
         self._error_message = data.get("error_message")
         self._pending_order_id = data.get("pending_order_id")
 
-        if data.get("position"):
+        # Load positions
+        self._positions.clear()
+
+        # Handle new multi-position format
+        if "positions" in data and isinstance(data["positions"], dict):
+            for pair, pos in data["positions"].items():
+                entries = [
+                    PositionEntry(
+                        price=e["price"],
+                        size=e["size"],
+                        size_usd=e.get("size_usd", e["price"] * e["size"]),
+                        entry_time=datetime.fromisoformat(e["entry_time"]),
+                        order_id=e["order_id"],
+                    )
+                    for e in pos["entries"]
+                ]
+
+                self._positions[pair] = TradingPosition(
+                    pair=pos["pair"],
+                    side=pos["side"],
+                    entries=entries,
+                    peak_price=pos.get("peak_price", entries[0].price if entries else 0),
+                    trailing_stop_active=pos.get("trailing_stop_active", False),
+                )
+
+        # Handle legacy single-position format
+        elif "position" in data and data["position"]:
             pos = data["position"]
 
-            # Handle both old format (single entry) and new format (entries list)
             if "entries" in pos:
                 entries = [
                     PositionEntry(
@@ -505,17 +612,16 @@ class TradingStateMachine:
                     )
                 ]
 
-            self._position = TradingPosition(
-                pair=pos["pair"],
+            pair = pos["pair"]
+            self._positions[pair] = TradingPosition(
+                pair=pair,
                 side=pos["side"],
                 entries=entries,
                 peak_price=pos.get("peak_price", entries[0].price if entries else 0),
                 trailing_stop_active=pos.get("trailing_stop_active", False),
             )
-        else:
-            self._position = None
 
         logger.info(
             f"State restored: {self._state.value}",
-            has_position=self._position is not None
+            open_positions=list(self._positions.keys())
         )

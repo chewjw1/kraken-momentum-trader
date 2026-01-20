@@ -227,13 +227,13 @@ class RiskManager:
                 reason=f"Circuit breaker active: {state.state.value}"
             )
 
-        # Check total exposure after add-on
+        # Check total exposure after add-on (across ALL positions)
         max_exposure = self._total_capital * (self.config.max_total_exposure_percent / 100)
-        new_total_exposure = current_position_exposure + additional_size_usd
+        new_total_exposure = self._current_exposure + additional_size_usd
 
         if new_total_exposure > max_exposure:
             # Adjust size to fit within limits
-            available = max_exposure - current_position_exposure
+            available = max_exposure - self._current_exposure
             if available <= 0:
                 return RiskCheck(
                     allowed=False,

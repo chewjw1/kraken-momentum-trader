@@ -237,28 +237,28 @@ class Trader:
         # Check if we have a position in this pair
         current_position = self._get_current_position(pair, market_data)
 
-        # Update peak price if we have a position
-        if current_position and self.state_machine.has_position:
+        # Update peak price if we have a position in this pair
+        if current_position:
             current_price = market_data.ticker.last if market_data.ticker else 0
-            self.state_machine.update_peak_price(current_price)
+            self.state_machine.update_peak_price(pair, current_price)
 
         # Start analysis
         self.state_machine.start_analysis()
 
-        # Get peak price and trailing stop status for strategy
+        # Get peak price and trailing stop status for strategy (pair-specific)
         peak_price = None
         trailing_stop_active = False
-        if self.state_machine.has_position:
-            pos = self.state_machine.position
+        pos = self.state_machine.get_position(pair)
+        if pos:
             peak_price = pos.peak_price
             trailing_stop_active = pos.trailing_stop_active
 
         # Get signal from strategy (pass trailing stop info)
         signal = self.strategy.analyze(market_data, current_position)
 
-        # Check if trailing stop should be activated
+        # Check if trailing stop should be activated (pair-specific)
         if signal.indicators.get("_should_activate_trailing", False):
-            self.state_machine.activate_trailing_stop()
+            self.state_machine.activate_trailing_stop(pair)
 
         logger.debug(
             f"Signal for {pair}: {signal.signal_type.value}",
@@ -266,10 +266,10 @@ class Trader:
             reason=signal.reason
         )
 
-        # Check for Martingale add-on opportunity if we have a position
-        if current_position and self.state_machine.has_position:
+        # Check for Martingale add-on opportunity if we have a position in this pair
+        if current_position:
             current_price = market_data.ticker.last if market_data.ticker else 0
-            avg_entry = self.state_machine.position.entry_price
+            avg_entry = pos.entry_price
 
             should_add, add_reason = self.strategy.should_add_to_position(
                 market_data=market_data,
@@ -278,7 +278,7 @@ class Trader:
             )
 
             if should_add:
-                self._add_to_position(market_data, add_reason)
+                self._add_to_position(pair, market_data, add_reason)
                 self.state_machine.analysis_complete(has_signal=False)
                 return
 
@@ -330,11 +330,8 @@ class Trader:
         Returns:
             Position or None.
         """
-        if not self.state_machine.has_position:
-            return None
-
-        pos = self.state_machine.position
-        if pos.pair != pair:
+        pos = self.state_machine.get_position(pair)
+        if not pos:
             return None
 
         current_price = market_data.ticker.last if market_data.ticker else 0
@@ -432,8 +429,9 @@ class Trader:
                 order_id=order.order_id
             )
 
-            # Update exposure
-            self.risk_manager.update_exposure(position_size_usd)
+            # Update total exposure across all positions
+            total_exposure = self.state_machine.total_exposure_usd
+            self.risk_manager.update_exposure(total_exposure)
 
             # Log trade
             self.trade_logger.log_trade(
@@ -465,20 +463,20 @@ class Trader:
             self.state_machine.set_error(str(e))
             self.notifier.notify_error("Entry Order Failed", str(e), pair)
 
-    def _add_to_position(self, market_data: MarketData, reason: str) -> None:
+    def _add_to_position(self, pair: str, market_data: MarketData, reason: str) -> None:
         """
         Add to existing position (Martingale).
 
         Args:
+            pair: Trading pair.
             market_data: Current market data.
             reason: Reason for adding.
         """
-        position = self.state_machine.position
+        position = self.state_machine.get_position(pair)
         if not position:
-            logger.warning("Cannot add to position: no position exists")
+            logger.warning(f"Cannot add to position: no position exists for {pair}")
             return
 
-        pair = position.pair
         current_price = market_data.ticker.last if market_data.ticker else 0
 
         # Calculate add-on size based on last entry
@@ -519,15 +517,16 @@ class Trader:
 
             # Add to position
             self.state_machine.add_to_position(
+                pair=pair,
                 entry_price=order.price or current_price,
                 size=add_on_size_units,
                 size_usd=add_on_size_usd,
                 order_id=order.order_id
             )
 
-            # Update exposure
-            new_exposure = position.total_cost_usd
-            self.risk_manager.update_exposure(new_exposure)
+            # Update total exposure across all positions
+            total_exposure = self.state_machine.total_exposure_usd
+            self.risk_manager.update_exposure(total_exposure)
 
             # Log trade
             self.trade_logger.log_trade(
@@ -588,7 +587,7 @@ class Trader:
             reason=signal.reason
         )
 
-        self.state_machine.start_exit(signal.reason)
+        self.state_machine.start_exit(pair, signal.reason)
 
         try:
             # Place exit order
@@ -625,10 +624,11 @@ class Trader:
             self.metrics.record_trade(trade)
 
             # Update state
-            self.state_machine.close_position(exit_price, pnl)
+            self.state_machine.close_position(pair, exit_price, pnl)
 
-            # Update exposure
-            self.risk_manager.update_exposure(0)
+            # Update total exposure across remaining positions
+            total_exposure = self.state_machine.total_exposure_usd
+            self.risk_manager.update_exposure(total_exposure)
 
             # Log trade
             self.trade_logger.log_trade(
@@ -695,13 +695,14 @@ class Trader:
             details=reason
         )
 
-        if self.state_machine.has_position:
-            pos = self.state_machine.position
+        total_pnl = 0.0
+        positions_to_close = list(self.state_machine.positions.items())
 
+        for pair, pos in positions_to_close:
             try:
                 # Emergency market sell
                 order = self.client.place_order(
-                    pair=pos.pair,
+                    pair=pair,
                     side=OrderSide.SELL,
                     order_type=OrderType.MARKET,
                     volume=pos.size
@@ -709,17 +710,20 @@ class Trader:
 
                 exit_price = order.price or 0
                 pnl = (exit_price - pos.entry_price) * pos.size
+                total_pnl += pnl
 
-                self.state_machine.close_position(exit_price, pnl)
-                self.risk_manager.update_exposure(0)
+                self.state_machine.close_position(pair, exit_price, pnl)
 
                 logger.info(
-                    f"Emergency exit completed: P&L ${pnl:.2f}",
+                    f"Emergency exit {pair}: P&L ${pnl:.2f}",
                     reason=reason
                 )
 
             except Exception as e:
-                logger.error(f"Emergency exit failed: {e}")
+                logger.error(f"Emergency exit failed for {pair}: {e}")
+
+        self.risk_manager.update_exposure(0)
+        logger.info(f"Emergency exit completed: Total P&L ${total_pnl:.2f}")
 
         # Stop trading
         self.state_machine.stop(reason)
@@ -806,16 +810,29 @@ class Trader:
             wins = daily.wins if daily else 0
             losses = daily.losses if daily else 0
 
-            # Get open position info if exists
+            # Get open positions info (show first position for backward compatibility)
             open_position = None
             if self.state_machine.has_position:
-                pos = self.state_machine.position
-                open_position = {
-                    "pair": pos.pair,
-                    "size": pos.size,
-                    "entry_price": pos.entry_price,
-                    "num_entries": pos.num_entries
-                }
+                # Summarize all positions
+                positions = self.state_machine.positions
+                if len(positions) == 1:
+                    pos = next(iter(positions.values()))
+                    open_position = {
+                        "pair": pos.pair,
+                        "size": pos.size,
+                        "entry_price": pos.entry_price,
+                        "num_entries": pos.num_entries
+                    }
+                else:
+                    # Multiple positions - show summary
+                    pairs = list(positions.keys())
+                    total_exposure = self.state_machine.total_exposure_usd
+                    open_position = {
+                        "pair": f"{len(positions)} positions: {', '.join(pairs)}",
+                        "size": 0,
+                        "entry_price": total_exposure,
+                        "num_entries": sum(p.num_entries for p in positions.values())
+                    }
 
             summary = DailySummaryData(
                 date=today_str,
@@ -852,20 +869,29 @@ class Trader:
         risk_limits = self.risk_manager.get_limits()
         metrics = self.metrics.get_metrics()
 
+        # Build positions list
+        positions_list = []
+        for pair, pos in state.positions.items():
+            positions_list.append({
+                "pair": pos.pair,
+                "side": pos.side,
+                "entry_price": pos.entry_price,
+                "size": pos.size,
+                "peak_price": pos.peak_price,
+                "trailing_stop_active": pos.trailing_stop_active,
+                "num_entries": pos.num_entries,
+                "total_cost_usd": pos.total_cost_usd,
+            })
+
         return {
             "running": self._running,
             "state": state.current_state.value,
-            "has_position": state.position is not None,
-            "position": {
-                "pair": state.position.pair,
-                "side": state.position.side,
-                "entry_price": state.position.entry_price,
-                "size": state.position.size,
-                "peak_price": state.position.peak_price,
-                "trailing_stop_active": state.position.trailing_stop_active,
-                "num_entries": state.position.num_entries,
-                "total_cost_usd": state.position.total_cost_usd,
-            } if state.position else None,
+            "has_position": len(state.positions) > 0,
+            "position_count": len(state.positions),
+            "positions": positions_list,
+            "total_exposure_usd": self.state_machine.total_exposure_usd,
+            # Keep 'position' for backward compatibility (first position)
+            "position": positions_list[0] if positions_list else None,
             "risk_limits": {
                 "exposure_available": risk_limits.exposure_available,
                 "max_position_size": risk_limits.max_position_size,
