@@ -104,6 +104,29 @@ class LoggingConfig:
 
 
 @dataclass
+class DiscordConfig:
+    """Discord notification configuration."""
+    enabled: bool = False
+    webhook_url: str = ""
+
+
+@dataclass
+class DailySummaryConfig:
+    """Daily summary scheduler configuration."""
+    enabled: bool = True
+    hour: int = 17  # 5 PM
+    minute: int = 0
+    timezone: str = "America/New_York"
+
+
+@dataclass
+class NotificationConfig:
+    """Notification configuration."""
+    discord: DiscordConfig = field(default_factory=DiscordConfig)
+    daily_summary: DailySummaryConfig = field(default_factory=DailySummaryConfig)
+
+
+@dataclass
 class Settings:
     """Main application settings container."""
     trading: TradingConfig = field(default_factory=TradingConfig)
@@ -112,6 +135,7 @@ class Settings:
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
 
 
 def _find_config_file() -> Optional[Path]:
@@ -225,6 +249,19 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
                 data.get("logging"), LoggingConfig, settings.logging
             )
 
+            # Handle notifications config with nested discord and daily_summary
+            notif_data = data.get("notifications", {})
+            if notif_data and isinstance(notif_data, dict):
+                discord_data = notif_data.get("discord", {})
+                daily_summary_data = notif_data.get("daily_summary", {})
+
+                settings.notifications.discord = _dict_to_config(
+                    discord_data, DiscordConfig, settings.notifications.discord
+                )
+                settings.notifications.daily_summary = _dict_to_config(
+                    daily_summary_data, DailySummaryConfig, settings.notifications.daily_summary
+                )
+
     # Override from environment variables
     _apply_env_overrides(settings)
 
@@ -262,6 +299,14 @@ def _apply_env_overrides(settings: Settings) -> None:
     # Logging overrides
     if log_level := os.environ.get("LOG_LEVEL"):
         settings.logging.level = log_level.upper()
+
+    # Notification overrides
+    if discord_webhook := os.environ.get("DISCORD_WEBHOOK_URL"):
+        settings.notifications.discord.webhook_url = discord_webhook
+        settings.notifications.discord.enabled = True
+
+    if discord_enabled := os.environ.get("DISCORD_NOTIFICATIONS_ENABLED"):
+        settings.notifications.discord.enabled = discord_enabled.lower() == "true"
 
 
 # Global settings instance (lazy loaded)

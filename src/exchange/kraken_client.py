@@ -160,6 +160,11 @@ class KrakenClient:
             "USD": 10000.0,
             "BTC": 0.0,
             "ETH": 0.0,
+            "XRP": 0.0,
+            "SOL": 0.0,
+            "DOGE": 0.0,
+            "ADA": 0.0,
+            "MATIC": 0.0,
         }
         self._paper_orders: dict[str, Order] = {}
         self._paper_order_counter = 0

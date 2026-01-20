@@ -14,6 +14,8 @@ from ..exchange.kraken_client import (
     OrderSide,
     OrderType,
 )
+from ..notifications.discord import DiscordNotifier, TradeNotification, DailySummaryData
+from ..notifications.scheduler import DailySummaryScheduler
 from ..observability.logger import get_logger
 from ..observability.metrics import MetricsTracker, Trade
 from ..persistence.file_store import StateStore, TradeLogger
@@ -77,6 +79,20 @@ class Trader:
         self.state_store = StateStore()
         self.trade_logger = TradeLogger()
 
+        # Initialize notifications
+        notif_config = self.settings.notifications
+        self.notifier = DiscordNotifier(
+            webhook_url=notif_config.discord.webhook_url,
+            enabled=notif_config.discord.enabled
+        )
+
+        # Initialize daily summary scheduler
+        self.summary_scheduler = DailySummaryScheduler(
+            callback=self._send_daily_summary,
+            target_hour=notif_config.daily_summary.hour,
+            target_minute=notif_config.daily_summary.minute
+        ) if notif_config.daily_summary.enabled else None
+
         # Running flag
         self._running = False
         self._should_stop = False
@@ -85,7 +101,8 @@ class Trader:
             "Trader initialized",
             paper_trading=self.settings.trading.paper_trading,
             pairs=self.settings.trading.pairs,
-            strategy=self.strategy.name
+            strategy=self.strategy.name,
+            notifications_enabled=notif_config.discord.enabled
         )
 
     def initialize(self) -> bool:
@@ -141,6 +158,16 @@ class Trader:
 
         self._running = True
         self._should_stop = False
+
+        # Start daily summary scheduler
+        if self.summary_scheduler:
+            self.summary_scheduler.start()
+
+        # Send startup notification
+        self.notifier.notify_startup(
+            pairs=self.settings.trading.pairs,
+            paper_trading=self.settings.trading.paper_trading
+        )
 
         logger.info("Starting trading loop")
 
@@ -420,9 +447,23 @@ class Trader:
                 signal_reason=signal.reason
             )
 
+            # Send Discord notification
+            self.notifier.notify_trade_entry(
+                trade=TradeNotification(
+                    pair=pair,
+                    side="buy",
+                    price=order.price or price,
+                    size=position_size_units,
+                    size_usd=position_size_usd,
+                    reason=signal.reason
+                ),
+                paper_trading=self.settings.trading.paper_trading
+            )
+
         except Exception as e:
             logger.error(f"Failed to place entry order: {e}")
             self.state_machine.set_error(str(e))
+            self.notifier.notify_error("Entry Order Failed", str(e), pair)
 
     def _add_to_position(self, market_data: MarketData, reason: str) -> None:
         """
@@ -505,8 +546,24 @@ class Trader:
                 f"total size {position.size:.6f}, entries {position.num_entries}"
             )
 
+            # Send Discord notification
+            self.notifier.notify_martingale_add(
+                trade=TradeNotification(
+                    pair=pair,
+                    side="buy",
+                    price=order.price or current_price,
+                    size=add_on_size_units,
+                    size_usd=add_on_size_usd,
+                    reason=reason,
+                    entry_num=position.num_entries,
+                    avg_entry=position.entry_price
+                ),
+                paper_trading=self.settings.trading.paper_trading
+            )
+
         except Exception as e:
             logger.error(f"Failed to place Martingale add-on order: {e}")
+            self.notifier.notify_error("Martingale Add-on Failed", str(e), pair)
 
     def _exit_position(
         self,
@@ -606,9 +663,25 @@ class Trader:
                 trade_id=order.order_id
             )
 
+            # Send Discord notification
+            self.notifier.notify_trade_exit(
+                trade=TradeNotification(
+                    pair=pair,
+                    side="sell",
+                    price=exit_price,
+                    size=size,
+                    size_usd=exit_price * size,
+                    reason=signal.reason,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent
+                ),
+                paper_trading=self.settings.trading.paper_trading
+            )
+
         except Exception as e:
             logger.error(f"Failed to place exit order: {e}")
             self.state_machine.set_error(str(e))
+            self.notifier.notify_error("Exit Order Failed", str(e), pair)
 
     def _handle_emergency_exit(self, reason: str) -> None:
         """
@@ -697,17 +770,76 @@ class Trader:
         """Clean shutdown."""
         logger.info("Shutting down trader")
 
+        # Stop daily summary scheduler
+        if self.summary_scheduler:
+            self.summary_scheduler.stop()
+
+        # Send shutdown notification
+        self.notifier.notify_shutdown("Trader shutdown")
+
         # Save final state
         self._save_state()
 
         # Backup data
         self.state_store.backup_all()
 
-        # Close client
+        # Close client and notifier
         self.client.close()
+        self.notifier.close()
 
         self._running = False
         logger.info("Trader shutdown complete")
+
+    def _send_daily_summary(self) -> None:
+        """Send daily summary notification."""
+        try:
+            metrics = self.metrics.get_metrics()
+            today = datetime.now(timezone.utc)
+            today_str = today.strftime("%Y-%m-%d")
+
+            # Get today's metrics
+            daily_pnl = self.metrics.get_daily_pnl(today)
+            daily_trades = self.metrics.get_daily_trade_count(today)
+
+            # Get today's wins/losses from daily_metrics
+            daily = self.metrics.daily_metrics.get(today_str)
+            wins = daily.wins if daily else 0
+            losses = daily.losses if daily else 0
+
+            # Get open position info if exists
+            open_position = None
+            if self.state_machine.has_position:
+                pos = self.state_machine.position
+                open_position = {
+                    "pair": pos.pair,
+                    "size": pos.size,
+                    "entry_price": pos.entry_price,
+                    "num_entries": pos.num_entries
+                }
+
+            summary = DailySummaryData(
+                date=today_str,
+                total_trades=daily_trades,
+                wins=wins,
+                losses=losses,
+                daily_pnl=daily_pnl,
+                total_pnl=metrics.total_pnl,
+                win_rate=metrics.win_rate,
+                current_capital=self.metrics.current_capital,
+                open_position=open_position,
+                sharpe_ratio=metrics.sharpe_ratio,
+                max_drawdown_percent=metrics.max_drawdown_percent
+            )
+
+            self.notifier.notify_daily_summary(
+                summary=summary,
+                paper_trading=self.settings.trading.paper_trading
+            )
+
+            logger.info("Daily summary notification sent")
+
+        except Exception as e:
+            logger.error(f"Failed to send daily summary: {e}")
 
     def get_status(self) -> dict:
         """

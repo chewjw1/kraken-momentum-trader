@@ -2,19 +2,19 @@
 # WARNING: Start with paper_trading: true and validate strategy before using real capital
 
 trading:
-  pairs: ["BTC/USD", "ETH/USD"]
+  pairs: ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD", "DOGE/USD", "ADA/USD", "MATIC/USD"]
   check_interval_seconds: 60
   paper_trading: true  # CRITICAL: Keep true until strategy validated over 2+ weeks
 
 strategy:
   name: "momentum"
-  momentum_threshold: 0.02  # Minimum expected gain before trading
-  min_expected_gain: 0.015  # Must exceed fees (0.32-0.52% round-trip)
+  momentum_threshold: 0.01  # Reduced from 0.02 for sideways markets
+  min_expected_gain: 0.008  # Reduced from 0.015 for more frequent trades
 
-  # RSI Configuration
+  # RSI Configuration - widened bands for more signals
   rsi_period: 14
-  rsi_oversold: 30
-  rsi_overbought: 70
+  rsi_oversold: 38  # Raised from 30 - triggers buy signals earlier
+  rsi_overbought: 62  # Lowered from 70 - triggers sell signals earlier
 
   # EMA Configuration
   ema_short_period: 12
@@ -22,7 +22,7 @@ strategy:
 
   # Volume Configuration
   volume_sma_period: 20
-  volume_threshold: 1.5  # Volume must be 1.5x average
+  volume_threshold: 1.25  # Reduced from 1.5 - less strict volume requirement
 
 risk:
   # Position Limits
@@ -30,10 +30,10 @@ risk:
   max_position_percent: 40.0  # Max 40% of capital per initial trade
   max_total_exposure_percent: 200.0  # Max 200% total exposure (for Martingale)
 
-  # Trailing Stop Configuration
+  # Trailing Stop Configuration - tightened for sideways markets
   use_trailing_stop: true
-  trailing_stop_percent: 5.0  # Exit when price drops 5% from peak
-  trailing_stop_activation_percent: 5.0  # Only activate after 5% profit
+  trailing_stop_percent: 3.5  # Reduced from 5.0 - tighter stop to lock in gains
+  trailing_stop_activation_percent: 2.5  # Reduced from 5.0 - activate stop sooner
   initial_stop_loss_percent: 0.0  # No initial stop loss (0 = disabled)
 
   # Martingale Configuration
@@ -66,3 +66,13 @@ logging:
   level: "INFO"
   format: "json"  # "json" for production, "text" for development
   include_timestamps: true
+
+notifications:
+  discord:
+    enabled: true
+    webhook_url: ""  # Set via DISCORD_WEBHOOK_URL environment variable
+  daily_summary:
+    enabled: true
+    hour: 17  # 5 PM
+    minute: 0
+    timezone: "America/New_York"
