@@ -57,10 +57,8 @@ exchange:
   retry_delay_seconds: 2
 
 persistence:
-  type: "file"  # "file" for Replit, "dynamodb" for AWS
-  state_file: "data/state.json"
-  trades_file: "data/trades.json"
-  metrics_file: "data/metrics.json"
+  type: "sqlite"  # "sqlite" recommended, "file" for legacy JSON
+  db_path: "data/trading.db"
 
 logging:
   level: "INFO"

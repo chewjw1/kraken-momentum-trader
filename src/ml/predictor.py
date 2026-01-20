@@ -39,7 +39,8 @@ class SignalPredictor:
         self,
         model_dir: str = "data/ml/models",
         confidence_threshold: float = 0.6,
-        enabled: bool = True
+        enabled: bool = True,
+        db_path: str = "data/trading.db"
     ):
         """
         Initialize predictor.
@@ -48,6 +49,7 @@ class SignalPredictor:
             model_dir: Directory containing saved model.
             confidence_threshold: Minimum confidence to approve signal.
             enabled: Whether ML predictions are enabled.
+            db_path: Path to SQLite database.
         """
         self.model_dir = Path(model_dir)
         self.confidence_threshold = confidence_threshold
@@ -56,7 +58,7 @@ class SignalPredictor:
         self.model = None
         self.scaler = None
         self.feature_extractor = FeatureExtractor()
-        self.data_store = MLDataStore()
+        self.data_store = MLDataStore(db_path=db_path)
 
         self._model_loaded = False
 

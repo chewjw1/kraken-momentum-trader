@@ -18,7 +18,8 @@ from ..notifications.discord import DiscordNotifier, TradeNotification, DailySum
 from ..notifications.scheduler import DailySummaryScheduler
 from ..observability.logger import get_logger
 from ..observability.metrics import MetricsTracker, Trade
-from ..persistence.file_store import StateStore, TradeLogger
+from ..persistence.sqlite_store import SQLiteStore
+from ..persistence.file_store import TradeLogger
 from ..risk.risk_manager import RiskManager
 from ..strategy.base_strategy import MarketData, Position, SignalType
 from ..strategy.momentum_strategy import MomentumStrategy
@@ -78,9 +79,9 @@ class Trader:
         # Initialize state machine
         self.state_machine = TradingStateMachine()
 
-        # Initialize persistence
-        self.state_store = StateStore()
-        self.trade_logger = TradeLogger()
+        # Initialize persistence (SQLite for all data)
+        self.db = SQLiteStore(db_path=self.settings.persistence.db_path)
+        self.trade_logger = TradeLogger()  # Keep append-only log for audit
 
         # Initialize notifications
         notif_config = self.settings.notifications
@@ -98,14 +99,17 @@ class Trader:
 
         # Initialize ML components
         ml_config = self.settings.ml
+        db_path = self.settings.persistence.db_path
+
         self.ml_predictor = SignalPredictor(
             model_dir=ml_config.model_dir,
             confidence_threshold=ml_config.confidence_threshold,
-            enabled=ml_config.enabled
+            enabled=ml_config.enabled,
+            db_path=db_path
         )
 
         # Initialize trainer and auto-retrainer
-        self.ml_trainer = ModelTrainer(model_dir=ml_config.model_dir)
+        self.ml_trainer = ModelTrainer(model_dir=ml_config.model_dir, db_path=db_path)
         self.ml_retrainer = AutoRetrainer(
             trainer=self.ml_trainer,
             predictor=self.ml_predictor,
@@ -137,7 +141,7 @@ class Trader:
         """
         try:
             # Try to restore previous state
-            saved_state = self.state_store.load_state()
+            saved_state = self.db.load_state()
             if saved_state:
                 logger.info("Restoring saved state")
                 self._restore_state(saved_state)
@@ -701,7 +705,7 @@ class Trader:
             )
 
             # Save trade to history
-            self.state_store.save_trade({
+            self.db.save_trade({
                 "trade_id": order.order_id,
                 "pair": pair,
                 "entry_price": position.entry_price,
@@ -824,7 +828,7 @@ class Trader:
             "risk_manager": self.risk_manager.to_dict(),
             "metrics": self.metrics.to_dict(),
         }
-        self.state_store.save_state(state)
+        self.db.save_state(state)
 
     def _restore_state(self, state: dict) -> None:
         """
@@ -862,7 +866,7 @@ class Trader:
         self._save_state()
 
         # Backup data
-        self.state_store.backup_all()
+        self.db.backup_all()
 
         # Close client and notifier
         self.client.close()

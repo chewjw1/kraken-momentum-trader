@@ -157,13 +157,13 @@ class AutoRetrainer:
 
     def _calculate_recent_win_rate(self, n_trades: int) -> Optional[float]:
         """Calculate win rate of last N trades."""
-        X, y = self.data_store.get_training_data()
+        # Get recent outcomes from SQLite
+        recent_outcomes = self.data_store.db.get_recent_ml_outcomes(n_trades)
 
-        if len(y) < n_trades:
+        if len(recent_outcomes) < n_trades:
             return None
 
-        recent_outcomes = y[-n_trades:]
-        return recent_outcomes.mean()
+        return sum(recent_outcomes) / len(recent_outcomes)
 
     def _perform_retrain(self, reason: str) -> None:
         """

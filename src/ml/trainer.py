@@ -43,7 +43,8 @@ class ModelTrainer:
     def __init__(
         self,
         model_dir: str = "data/ml/models",
-        data_store: Optional[MLDataStore] = None
+        data_store: Optional[MLDataStore] = None,
+        db_path: str = "data/trading.db"
     ):
         """
         Initialize trainer.
@@ -51,11 +52,12 @@ class ModelTrainer:
         Args:
             model_dir: Directory for saving models.
             data_store: Data store for training samples.
+            db_path: Path to SQLite database.
         """
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
-        self.data_store = data_store or MLDataStore()
+        self.data_store = data_store or MLDataStore(db_path=db_path)
         self.feature_extractor = FeatureExtractor()
 
         self.model = None

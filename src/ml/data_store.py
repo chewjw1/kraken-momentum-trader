@@ -2,6 +2,7 @@
 Data store for ML training samples.
 
 Stores feature vectors with outcomes for model training and retraining.
+Uses SQLite for persistent storage.
 """
 
 import json
@@ -14,6 +15,7 @@ from typing import Optional
 import numpy as np
 
 from .features import MLFeatures
+from ..persistence.sqlite_store import SQLiteStore
 from ..observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -36,81 +38,22 @@ class TrainingSample:
 
 class MLDataStore:
     """
-    Persistent storage for ML training data.
+    Persistent storage for ML training data using SQLite.
 
     Stores:
     - Completed trades with features and outcomes
     - Pending trades awaiting outcome
     """
 
-    def __init__(self, base_path: str = "data/ml"):
+    def __init__(self, db_path: str = "data/trading.db"):
         """
-        Initialize data store.
+        Initialize data store with SQLite backend.
 
         Args:
-            base_path: Base directory for ML data files.
+            db_path: Path to SQLite database.
         """
-        self.base_path = Path(base_path)
-        self.base_path.mkdir(parents=True, exist_ok=True)
-
-        self.samples_file = self.base_path / "training_samples.json"
-        self.pending_file = self.base_path / "pending_trades.json"
-
-        self._samples: list[TrainingSample] = []
-        self._pending: dict[str, TrainingSample] = {}  # order_id -> sample
-
-        self._load()
-
-    def _load(self) -> None:
-        """Load existing data from files."""
-        # Load completed samples
-        if self.samples_file.exists():
-            try:
-                with open(self.samples_file, "r") as f:
-                    data = json.load(f)
-                    self._samples = [TrainingSample(**s) for s in data.get("samples", [])]
-                logger.info(f"Loaded {len(self._samples)} training samples")
-            except Exception as e:
-                logger.error(f"Failed to load training samples: {e}")
-                self._samples = []
-
-        # Load pending trades
-        if self.pending_file.exists():
-            try:
-                with open(self.pending_file, "r") as f:
-                    data = json.load(f)
-                    self._pending = {
-                        k: TrainingSample(**v)
-                        for k, v in data.get("pending", {}).items()
-                    }
-                logger.info(f"Loaded {len(self._pending)} pending trades")
-            except Exception as e:
-                logger.error(f"Failed to load pending trades: {e}")
-                self._pending = {}
-
-    def _save_samples(self) -> None:
-        """Save completed samples to file."""
-        try:
-            with open(self.samples_file, "w") as f:
-                json.dump(
-                    {"samples": [asdict(s) for s in self._samples]},
-                    f,
-                    indent=2
-                )
-        except Exception as e:
-            logger.error(f"Failed to save training samples: {e}")
-
-    def _save_pending(self) -> None:
-        """Save pending trades to file."""
-        try:
-            with open(self.pending_file, "w") as f:
-                json.dump(
-                    {"pending": {k: asdict(v) for k, v in self._pending.items()}},
-                    f,
-                    indent=2
-                )
-        except Exception as e:
-            logger.error(f"Failed to save pending trades: {e}")
+        self.db = SQLiteStore(db_path)
+        logger.info(f"ML data store initialized with SQLite: {db_path}")
 
     def record_entry(
         self,
@@ -130,16 +73,15 @@ class MLDataStore:
             features: ML features at entry time.
             entry_price: Entry price.
         """
-        sample = TrainingSample(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+        features_dict = asdict(features) if hasattr(features, '__dataclass_fields__') else features.__dict__
+
+        self.db.record_ml_entry(
+            order_id=order_id,
             pair=pair,
             signal_type=signal_type,
-            features=asdict(features) if hasattr(features, '__dataclass_fields__') else features.__dict__,
+            features=features_dict,
             entry_price=entry_price
         )
-
-        self._pending[order_id] = sample
-        self._save_pending()
 
         logger.debug(f"Recorded entry for {pair} at {entry_price}")
 
@@ -149,7 +91,7 @@ class MLDataStore:
         exit_price: float,
         pnl: float,
         pnl_percent: float
-    ) -> Optional[TrainingSample]:
+    ) -> bool:
         """
         Record trade exit and compute outcome.
 
@@ -160,39 +102,14 @@ class MLDataStore:
             pnl_percent: Profit/loss percentage.
 
         Returns:
-            Completed TrainingSample or None if order not found.
+            True if recorded successfully.
         """
-        if order_id not in self._pending:
-            logger.warning(f"Order {order_id} not found in pending trades")
-            return None
-
-        sample = self._pending.pop(order_id)
-
-        # Calculate hold duration
-        entry_time = datetime.fromisoformat(sample.timestamp)
-        exit_time = datetime.now(timezone.utc)
-        hold_duration = (exit_time - entry_time).total_seconds() / 3600  # hours
-
-        # Update sample with outcome
-        sample.exit_price = exit_price
-        sample.pnl = pnl
-        sample.pnl_percent = pnl_percent
-        sample.outcome = 1 if pnl > 0 else 0
-        sample.hold_duration_hours = hold_duration
-
-        # Add to completed samples
-        self._samples.append(sample)
-
-        # Save both files
-        self._save_samples()
-        self._save_pending()
-
-        logger.info(
-            f"Recorded exit for {sample.pair}: "
-            f"{'WIN' if sample.outcome else 'LOSS'} {pnl_percent:.2f}%"
+        return self.db.record_ml_exit(
+            order_id=order_id,
+            exit_price=exit_price,
+            pnl=pnl,
+            pnl_percent=pnl_percent
         )
-
-        return sample
 
     def add_historical_sample(
         self,
@@ -220,25 +137,24 @@ class MLDataStore:
             pnl_percent: Profit/loss percentage.
             hold_duration_hours: How long position was held.
         """
-        sample = TrainingSample(
-            timestamp=timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp,
+        features_dict = asdict(features) if hasattr(features, '__dataclass_fields__') else features.__dict__
+        timestamp_str = timestamp.isoformat() if isinstance(timestamp, datetime) else timestamp
+
+        self.db.add_ml_sample(
+            timestamp=timestamp_str,
             pair=pair,
             signal_type=signal_type,
-            features=asdict(features) if hasattr(features, '__dataclass_fields__') else features.__dict__,
+            features=features_dict,
             entry_price=entry_price,
             exit_price=exit_price,
             pnl=pnl,
             pnl_percent=pnl_percent,
-            outcome=1 if pnl > 0 else 0,
             hold_duration_hours=hold_duration_hours
         )
 
-        self._samples.append(sample)
-
     def save(self) -> None:
-        """Force save all data."""
-        self._save_samples()
-        self._save_pending()
+        """Force save all data (no-op for SQLite, auto-committed)."""
+        pass  # SQLite auto-commits
 
     def get_training_data(
         self,
@@ -255,67 +171,26 @@ class MLDataStore:
         Returns:
             Tuple of (features_array, labels_array).
         """
-        samples = self._samples
+        X, y = self.db.get_ml_training_data(min_samples=min_samples, pair=pair)
 
-        # Filter by pair if specified
-        if pair:
-            samples = [s for s in samples if s.pair == pair]
-
-        # Filter only completed samples
-        samples = [s for s in samples if s.outcome is not None]
-
-        if len(samples) < min_samples:
-            logger.warning(f"Insufficient samples: {len(samples)} < {min_samples}")
+        if not X:
             return np.array([]), np.array([])
-
-        # Extract features and labels
-        feature_names = MLFeatures.feature_names()
-        X = []
-        y = []
-
-        for sample in samples:
-            features = sample.features
-            feature_vector = [features.get(name, 0) for name in feature_names]
-            X.append(feature_vector)
-            y.append(sample.outcome)
 
         return np.array(X), np.array(y)
 
     def get_sample_count(self, pair: Optional[str] = None) -> int:
         """Get count of completed samples."""
-        samples = self._samples
-        if pair:
-            samples = [s for s in samples if s.pair == pair]
-        return len([s for s in samples if s.outcome is not None])
+        return self.db.get_ml_sample_count(pair=pair)
 
     def get_pending_count(self) -> int:
         """Get count of pending trades."""
-        return len(self._pending)
+        return self.db.get_ml_pending_count()
 
     def get_stats(self) -> dict:
         """Get statistics about stored data."""
-        completed = [s for s in self._samples if s.outcome is not None]
-        wins = sum(1 for s in completed if s.outcome == 1)
-
-        by_pair = {}
-        for sample in completed:
-            if sample.pair not in by_pair:
-                by_pair[sample.pair] = {"total": 0, "wins": 0}
-            by_pair[sample.pair]["total"] += 1
-            if sample.outcome == 1:
-                by_pair[sample.pair]["wins"] += 1
-
-        return {
-            "total_samples": len(completed),
-            "pending_trades": len(self._pending),
-            "overall_win_rate": (wins / len(completed) * 100) if completed else 0,
-            "by_pair": by_pair
-        }
+        return self.db.get_ml_stats()
 
     def clear_all(self) -> None:
         """Clear all stored data. Use with caution."""
-        self._samples = []
-        self._pending = {}
-        self._save_samples()
-        self._save_pending()
+        self.db.clear_ml_data()
         logger.warning("All ML training data cleared")

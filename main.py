@@ -346,7 +346,10 @@ def train_ml_model(
 
         # Train model
         print("\nTraining ML model...")
-        trainer = ModelTrainer(model_dir=settings.ml.model_dir)
+        trainer = ModelTrainer(
+            model_dir=settings.ml.model_dir,
+            db_path=settings.persistence.db_path
+        )
 
         strategy_params = {
             "rsi_oversold": settings.strategy.rsi_oversold,

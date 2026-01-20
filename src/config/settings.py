@@ -89,7 +89,9 @@ class ExchangeConfig:
 @dataclass
 class PersistenceConfig:
     """Persistence configuration."""
-    type: str = "file"
+    type: str = "sqlite"  # "sqlite" or "file"
+    db_path: str = "data/trading.db"
+    # Legacy JSON paths (for migration)
     state_file: str = "data/state.json"
     trades_file: str = "data/trades.json"
     metrics_file: str = "data/metrics.json"
