@@ -22,6 +22,9 @@ from ..persistence.file_store import StateStore, TradeLogger
 from ..risk.risk_manager import RiskManager
 from ..strategy.base_strategy import MarketData, Position, SignalType
 from ..strategy.momentum_strategy import MomentumStrategy
+from ..ml.predictor import SignalPredictor
+from ..ml.retrainer import AutoRetrainer
+from ..ml.trainer import ModelTrainer
 from .state_machine import TradingState, TradingStateMachine
 
 logger = get_logger(__name__)
@@ -93,6 +96,25 @@ class Trader:
             target_minute=notif_config.daily_summary.minute
         ) if notif_config.daily_summary.enabled else None
 
+        # Initialize ML components
+        ml_config = self.settings.ml
+        self.ml_predictor = SignalPredictor(
+            model_dir=ml_config.model_dir,
+            confidence_threshold=ml_config.confidence_threshold,
+            enabled=ml_config.enabled
+        )
+
+        # Initialize trainer and auto-retrainer
+        self.ml_trainer = ModelTrainer(model_dir=ml_config.model_dir)
+        self.ml_retrainer = AutoRetrainer(
+            trainer=self.ml_trainer,
+            predictor=self.ml_predictor,
+            retrain_after_trades=ml_config.retrain_after_trades,
+            min_samples_for_retrain=ml_config.min_samples_for_retrain,
+            performance_threshold=ml_config.performance_threshold,
+            check_interval_seconds=ml_config.check_interval_seconds
+        ) if ml_config.enabled else None
+
         # Running flag
         self._running = False
         self._should_stop = False
@@ -102,7 +124,8 @@ class Trader:
             paper_trading=self.settings.trading.paper_trading,
             pairs=self.settings.trading.pairs,
             strategy=self.strategy.name,
-            notifications_enabled=notif_config.discord.enabled
+            notifications_enabled=notif_config.discord.enabled,
+            ml_enabled=ml_config.enabled
         )
 
     def initialize(self) -> bool:
@@ -133,6 +156,13 @@ class Trader:
                 )
                 # Will handle emergency exit in main loop
 
+            # Load ML model if enabled
+            if self.settings.ml.enabled:
+                if self.ml_predictor.load_model():
+                    logger.info("ML model loaded successfully")
+                else:
+                    logger.info("No ML model found - ML predictions disabled until training")
+
             self.state_machine.initialize_complete()
             return True
 
@@ -162,6 +192,10 @@ class Trader:
         # Start daily summary scheduler
         if self.summary_scheduler:
             self.summary_scheduler.start()
+
+        # Start ML auto-retrainer
+        if self.ml_retrainer:
+            self.ml_retrainer.start()
 
         # Send startup notification
         self.notifier.notify_startup(
@@ -387,6 +421,18 @@ class Trader:
         pair = signal.pair
         price = signal.price
 
+        # ML signal filtering
+        if self.settings.ml.enabled and self.ml_predictor.is_ready:
+            should_trade, ml_confidence, ml_reason = self.ml_predictor.should_take_signal(
+                signal_type="buy",
+                market_data=market_data
+            )
+            if not should_trade:
+                logger.info(f"ML rejected signal for {pair}: {ml_reason}")
+                self.state_machine.analysis_complete(has_signal=False)
+                return
+            logger.info(f"ML approved signal for {pair}: {ml_reason}")
+
         # Calculate position size
         size_check = self.risk_manager.check_position_size(
             self.settings.risk.max_position_size_usd,
@@ -444,6 +490,16 @@ class Trader:
                 signal_strength=signal.strength,
                 signal_reason=signal.reason
             )
+
+            # Record trade entry for ML training
+            if self.settings.ml.enabled:
+                self.ml_predictor.record_trade_entry(
+                    order_id=order.order_id,
+                    pair=pair,
+                    signal_type="buy",
+                    market_data=market_data,
+                    entry_price=order.price or price
+                )
 
             # Send Discord notification
             self.notifier.notify_trade_entry(
@@ -663,6 +719,23 @@ class Trader:
                 trade_id=order.order_id
             )
 
+            # Record trade exit for ML training and notify retrainer
+            if self.settings.ml.enabled:
+                # Get entry order_id from position (first entry's order_id)
+                pos_state = self.state_machine.get_position(pair)
+                entry_order_id = pos_state.order_id if pos_state else order.order_id
+
+                self.ml_predictor.record_trade_exit(
+                    order_id=entry_order_id,
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    pnl_percent=pnl_percent
+                )
+
+                # Notify retrainer of completed trade
+                if self.ml_retrainer:
+                    self.ml_retrainer.record_trade_completed()
+
             # Send Discord notification
             self.notifier.notify_trade_exit(
                 trade=TradeNotification(
@@ -777,6 +850,10 @@ class Trader:
         # Stop daily summary scheduler
         if self.summary_scheduler:
             self.summary_scheduler.stop()
+
+        # Stop ML auto-retrainer
+        if self.ml_retrainer:
+            self.ml_retrainer.stop()
 
         # Send shutdown notification
         self.notifier.notify_shutdown("Trader shutdown")
@@ -905,4 +982,10 @@ class Trader:
                 "max_drawdown_percent": metrics.max_drawdown_percent,
             },
             "paper_trading": self.settings.trading.paper_trading,
+            "ml": {
+                "enabled": self.settings.ml.enabled,
+                "model_loaded": self.ml_predictor._model_loaded if self.ml_predictor else False,
+                "confidence_threshold": self.settings.ml.confidence_threshold,
+                "retrainer_status": self.ml_retrainer.get_status() if self.ml_retrainer else None
+            }
         }

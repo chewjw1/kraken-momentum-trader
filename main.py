@@ -80,6 +80,17 @@ def print_status(trader: Trader) -> None:
     print(f"Total P&L: ${metrics['total_pnl']:.2f}")
     print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}")
     print(f"Max Drawdown: {metrics['max_drawdown_percent']:.1f}%")
+
+    if 'ml' in status:
+        print(f"\n=== ML Status ===")
+        ml = status['ml']
+        print(f"Enabled: {ml['enabled']}")
+        print(f"Model Loaded: {ml['model_loaded']}")
+        print(f"Confidence Threshold: {ml['confidence_threshold']}")
+        if ml['retrainer_status']:
+            rs = ml['retrainer_status']
+            print(f"Trades Since Retrain: {rs['trades_since_retrain']}/{rs['retrain_threshold']}")
+            print(f"Total Training Samples: {rs['total_samples']}")
     print()
 
 
@@ -248,6 +259,135 @@ def show_config() -> None:
     print(f"  Name: {settings.exchange.name}")
     print(f"  Rate Limit: {settings.exchange.rate_limit_calls_per_minute} calls/min")
 
+    print("\n[ML Signal Enhancement]")
+    ml = settings.ml
+    print(f"  Enabled: {ml.enabled}")
+    print(f"  Confidence Threshold: {ml.confidence_threshold}")
+    print(f"  Model Directory: {ml.model_dir}")
+    print(f"  Retrain After: {ml.retrain_after_trades} trades")
+    print(f"  Min Samples: {ml.min_samples_for_retrain}")
+    print(f"  Performance Threshold: {ml.performance_threshold}")
+
+
+def train_ml_model(
+    pairs: Optional[list[str]] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    interval: int = 60,
+    min_trades: int = 100
+) -> int:
+    """
+    Train the ML model from historical data.
+
+    Args:
+        pairs: Trading pairs to use for training.
+        start: Start date (YYYY-MM-DD).
+        end: End date (YYYY-MM-DD).
+        interval: Candle interval in minutes.
+        min_trades: Minimum trades to generate.
+
+    Returns:
+        Exit code.
+    """
+    from datetime import timedelta
+    from src.exchange.kraken_client import KrakenClient
+    from src.ml.trainer import ModelTrainer
+    from src.config.settings import get_settings
+
+    print_banner()
+    print("=== ML MODEL TRAINING ===\n")
+
+    settings = get_settings()
+
+    # Use configured pairs if not specified
+    if not pairs:
+        pairs = settings.trading.pairs
+
+    # Parse dates
+    if end:
+        end_date = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        end_date = datetime.now(timezone.utc)
+
+    if start:
+        start_date = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        # Default to 6 months ago
+        start_date = end_date - timedelta(days=180)
+
+    print(f"Pairs: {', '.join(pairs)}")
+    print(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print(f"Interval: {interval} minutes")
+    print(f"Min Trades: {min_trades}")
+    print()
+
+    try:
+        # Fetch historical data
+        client = KrakenClient(paper_trading=True)
+        ohlcv_data = {}
+
+        print("Fetching historical data...")
+        for pair in pairs:
+            print(f"  Fetching {pair}...")
+            ohlc = client.get_ohlc(pair, interval=interval, since=int(start_date.timestamp()))
+            if ohlc:
+                # Convert to tuple format
+                ohlcv_data[pair] = [
+                    (c.time, c.open, c.high, c.low, c.close, c.volume)
+                    for c in ohlc
+                ]
+                print(f"    Got {len(ohlcv_data[pair])} candles")
+
+        client.close()
+
+        if not ohlcv_data:
+            print("No historical data fetched. Check API connection.")
+            return 1
+
+        # Train model
+        print("\nTraining ML model...")
+        trainer = ModelTrainer(model_dir=settings.ml.model_dir)
+
+        strategy_params = {
+            "rsi_oversold": settings.strategy.rsi_oversold,
+            "rsi_overbought": settings.strategy.rsi_overbought,
+            "trailing_stop_percent": settings.risk.trailing_stop_percent,
+            "trailing_activation_percent": settings.risk.trailing_stop_activation_percent
+        }
+
+        metrics = trainer.train_from_backtest(
+            ohlcv_data=ohlcv_data,
+            strategy_params=strategy_params,
+            min_trades=min_trades
+        )
+
+        # Save model
+        model_path = trainer.save_model()
+
+        print("\n=== Training Results ===")
+        print(f"Model saved to: {model_path}")
+        print(f"Training samples: {metrics.get('train_samples', 'N/A')}")
+        print(f"Test samples: {metrics.get('test_samples', 'N/A')}")
+        print(f"Accuracy: {metrics.get('accuracy', 0):.1%}")
+        print(f"Precision: {metrics.get('precision', 0):.1%}")
+        print(f"Recall: {metrics.get('recall', 0):.1%}")
+        print(f"F1 Score: {metrics.get('f1', 0):.1%}")
+        print(f"Cross-validation: {metrics.get('cv_score_mean', 0):.1%} (+/- {metrics.get('cv_score_std', 0)*2:.1%})")
+
+        if 'feature_importance' in metrics:
+            print("\nTop 5 Important Features:")
+            for i, (feature, importance) in enumerate(list(metrics['feature_importance'].items())[:5]):
+                print(f"  {i+1}. {feature}: {importance:.3f}")
+
+        print("\nML model training complete!")
+        return 0
+
+    except Exception as e:
+        print(f"Training error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
 
 def run_backtest(
     pair: str = "BTC/USD",
@@ -341,6 +481,11 @@ Backtest Examples:
   python main.py --backtest --pair BTC/USD --start 2024-01-01 --end 2024-06-30
   python main.py --backtest --pair ETH/USD --start 2023-01-01 --end 2023-12-31 --interval 240
   python main.py --backtest --pair BTC/USD --export  # Export results to CSV/JSON
+
+ML Training Examples:
+  python main.py --train-ml                   # Train ML model using configured pairs
+  python main.py --train-ml --start 2024-01-01 --end 2024-12-31
+  python main.py --train-ml --pair BTC/USD,ETH/USD --min-trades 200
         """
     )
 
@@ -396,6 +541,19 @@ Backtest Examples:
         help="Export backtest results to CSV/JSON files"
     )
 
+    # ML training arguments
+    parser.add_argument(
+        "--train-ml",
+        action="store_true",
+        help="Train ML model from historical data"
+    )
+    parser.add_argument(
+        "--min-trades",
+        type=int,
+        default=100,
+        help="Minimum trades for ML training (default: 100)"
+    )
+
     args = parser.parse_args()
 
     if args.show_config:
@@ -413,6 +571,19 @@ Backtest Examples:
             interval=args.interval,
             capital=args.capital,
             export=args.export
+        )
+
+    if args.train_ml:
+        # Parse pairs from --pair if specified (can be comma-separated)
+        pairs = None
+        if args.pair and args.pair != "BTC/USD":
+            pairs = [p.strip() for p in args.pair.split(",")]
+        return train_ml_model(
+            pairs=pairs,
+            start=args.start,
+            end=args.end,
+            interval=args.interval,
+            min_trades=args.min_trades
         )
 
     return run_trader(args.config)

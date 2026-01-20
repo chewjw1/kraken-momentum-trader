@@ -127,6 +127,20 @@ class NotificationConfig:
 
 
 @dataclass
+class MLConfig:
+    """Machine Learning configuration."""
+    enabled: bool = True
+    confidence_threshold: float = 0.6  # Min confidence to approve signals
+    model_dir: str = "data/ml/models"
+
+    # Auto-retraining settings
+    retrain_after_trades: int = 50  # Retrain after N new trades
+    min_samples_for_retrain: int = 100  # Min samples required
+    performance_threshold: float = 0.4  # Retrain if win rate drops below
+    check_interval_seconds: int = 3600  # Check triggers every hour
+
+
+@dataclass
 class Settings:
     """Main application settings container."""
     trading: TradingConfig = field(default_factory=TradingConfig)
@@ -136,6 +150,7 @@ class Settings:
     persistence: PersistenceConfig = field(default_factory=PersistenceConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    ml: MLConfig = field(default_factory=MLConfig)
 
 
 def _find_config_file() -> Optional[Path]:
@@ -261,6 +276,11 @@ def load_settings(config_path: Optional[str] = None) -> Settings:
                 settings.notifications.daily_summary = _dict_to_config(
                     daily_summary_data, DailySummaryConfig, settings.notifications.daily_summary
                 )
+
+            # Handle ML config
+            settings.ml = _dict_to_config(
+                data.get("ml"), MLConfig, settings.ml
+            )
 
     # Override from environment variables
     _apply_env_overrides(settings)

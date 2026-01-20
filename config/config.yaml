@@ -76,3 +76,15 @@ notifications:
     hour: 17  # 5 PM
     minute: 0
     timezone: "America/New_York"
+
+# Machine Learning Signal Enhancement
+ml:
+  enabled: true  # Enable ML-based signal filtering
+  confidence_threshold: 0.6  # Min ML confidence to approve signals (0.5-1.0)
+  model_dir: "data/ml/models"
+
+  # Auto-retraining triggers
+  retrain_after_trades: 50  # Retrain after N completed trades
+  min_samples_for_retrain: 100  # Minimum samples needed for training
+  performance_threshold: 0.4  # Retrain if recent win rate drops below this
+  check_interval_seconds: 3600  # How often to check retrain triggers
