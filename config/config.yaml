@@ -28,7 +28,7 @@ risk:
   # Position Limits
   max_position_size_usd: 5000
   max_position_percent: 40.0  # Max 40% of capital per initial trade
-  max_total_exposure_percent: 200.0  # Max 200% total exposure (for Martingale)
+  max_total_exposure_percent: 100.0  # Max 100% total exposure (no margin)
 
   # Trailing Stop Configuration - tightened for sideways markets
   use_trailing_stop: true
