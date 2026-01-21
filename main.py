@@ -16,6 +16,10 @@ import sys
 from datetime import datetime, timezone
 from typing import Optional
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from src.config.settings import get_settings, reload_settings
 from src.config.platform import detect_platform, get_platform_config
 from src.core.trader import Trader
