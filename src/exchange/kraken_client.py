@@ -158,7 +158,7 @@ class KrakenClient:
             "User-Agent": "KrakenMomentumTrader/1.0"
         })
 
-        # Paper trading state
+        # Paper trading state - will be initialized from real balances if credentials available
         self._paper_balances: dict[str, float] = {
             "USD": paper_trading_capital,
             "BTC": 0.0,
@@ -171,6 +171,11 @@ class KrakenClient:
         }
         self._paper_orders: dict[str, Order] = {}
         self._paper_order_counter = 0
+        self._paper_balances_initialized = False
+
+        # If paper trading with valid credentials, fetch real balances
+        if paper_trading and self._api_key and self._api_secret:
+            self._init_paper_balances_from_real()
 
         logger.info(
             "Kraken client initialized",
@@ -541,6 +546,29 @@ class KrakenClient:
     # =========================================================================
     # Paper Trading Simulation
     # =========================================================================
+
+    def _init_paper_balances_from_real(self) -> None:
+        """Initialize paper trading balances from real Kraken account."""
+        try:
+            logger.info("Fetching real balances for paper trading simulation...")
+
+            # Temporarily disable paper trading to fetch real balances
+            self.paper_trading = False
+            real_balances = self.get_balances()
+            self.paper_trading = True
+
+            # Update paper balances with real values
+            for asset, balance in real_balances.items():
+                self._paper_balances[asset] = balance.total
+
+            self._paper_balances_initialized = True
+
+            usd_balance = self._paper_balances.get("USD", 0)
+            logger.info(f"Paper trading initialized with real balance: ${usd_balance:.2f}")
+
+        except Exception as e:
+            logger.warning(f"Could not fetch real balances, using default: {e}")
+            self._paper_balances_initialized = False
 
     def _get_paper_balances(self) -> dict[str, Balance]:
         """Get simulated paper trading balances."""
