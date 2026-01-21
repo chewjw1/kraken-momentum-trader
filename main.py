@@ -333,7 +333,7 @@ def train_ml_model(
             if ohlc:
                 # Convert to tuple format
                 ohlcv_data[pair] = [
-                    (c.time, c.open, c.high, c.low, c.close, c.volume)
+                    (c.timestamp, c.open, c.high, c.low, c.close, c.volume)
                     for c in ohlc
                 ]
                 print(f"    Got {len(ohlcv_data[pair])} candles")

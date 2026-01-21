@@ -2,7 +2,7 @@
 # WARNING: Start with paper_trading: true and validate strategy before using real capital
 
 trading:
-  pairs: ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD", "DOGE/USD", "ADA/USD", "MATIC/USD"]
+  pairs: ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD", "DOGE/USD", "ADA/USD", "AVAX/USD"]
   check_interval_seconds: 60
   paper_trading: true  # CRITICAL: Keep true until strategy validated over 2+ weeks
 

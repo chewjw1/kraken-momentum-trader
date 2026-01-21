@@ -1,0 +1,40 @@
+{
+  "trained_at": "2026-01-21T01:47:58.186842+00:00",
+  "model_type": "gradient_boosting",
+  "total_samples": 77,
+  "metrics": {
+    "accuracy": 0.625,
+    "precision": 0.6923076923076923,
+    "recall": 0.8181818181818182,
+    "f1": 0.75,
+    "train_samples": 61,
+    "test_samples": 16,
+    "win_rate_actual": 0.6875,
+    "win_rate_predicted": 0.8125,
+    "cv_score_mean": 0.5743589743589743,
+    "cv_score_std": 0.0930348849052653,
+    "feature_importance": {
+      "lower_wick_ratio": 0.22011367268185272,
+      "rsi_slope": 0.11686286372428731,
+      "rsi": 0.10154664088885745,
+      "volume_ratio": 0.09037599668891523,
+      "candle_body_ratio": 0.08937629736502577,
+      "upper_wick_ratio": 0.054265510909908464,
+      "higher_highs": 0.04614740665674041,
+      "hour_of_day": 0.04028721008025089,
+      "price_vs_ema_long": 0.039460190661804714,
+      "distance_to_low_20": 0.03941180868610431,
+      "trend_strength": 0.038290561413500616,
+      "price_change_24h": 0.03789417918834543,
+      "volume_trend": 0.028338894218625527,
+      "price_change_4h": 0.02724798164654173,
+      "volatility": 0.010817460178531278,
+      "price_change_1h": 0.009670935408833788,
+      "distance_to_high_20": 0.00581345440976281,
+      "ema_crossover": 0.0032909681238060358,
+      "price_vs_ema_short": 0.0004604083390771259,
+      "day_of_week": 0.00032755872922831156,
+      "lower_lows": 0.0
+    }
+  }
+}
