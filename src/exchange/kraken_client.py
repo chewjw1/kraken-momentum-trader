@@ -115,7 +115,8 @@ class KrakenClient:
         self,
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
-        paper_trading: bool = True
+        paper_trading: bool = True,
+        paper_trading_capital: float = 10000.0
     ):
         """
         Initialize the Kraken client.
@@ -124,8 +125,10 @@ class KrakenClient:
             api_key: Kraken API key. If None, loaded from environment.
             api_secret: Kraken API secret. If None, loaded from environment.
             paper_trading: If True, simulate orders instead of executing.
+            paper_trading_capital: Starting USD balance for paper trading.
         """
         self.paper_trading = paper_trading
+        self._paper_trading_capital = paper_trading_capital
 
         # Load credentials
         if api_key and api_secret:
@@ -157,14 +160,14 @@ class KrakenClient:
 
         # Paper trading state
         self._paper_balances: dict[str, float] = {
-            "USD": 10000.0,
+            "USD": paper_trading_capital,
             "BTC": 0.0,
             "ETH": 0.0,
             "XRP": 0.0,
             "SOL": 0.0,
             "DOGE": 0.0,
             "ADA": 0.0,
-            "MATIC": 0.0,
+            "AVAX": 0.0,
         }
         self._paper_orders: dict[str, Order] = {}
         self._paper_order_counter = 0

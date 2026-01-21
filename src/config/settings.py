@@ -18,6 +18,7 @@ class TradingConfig:
     pairs: list[str] = field(default_factory=lambda: ["BTC/USD", "ETH/USD"])
     check_interval_seconds: int = 60
     paper_trading: bool = True  # CRITICAL: Default to paper trading
+    paper_trading_capital: float = 10000.0  # Starting capital for paper trading
 
 
 @dataclass

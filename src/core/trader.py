@@ -61,7 +61,8 @@ class Trader:
 
         # Initialize exchange client
         self.client = client or KrakenClient(
-            paper_trading=self.settings.trading.paper_trading
+            paper_trading=self.settings.trading.paper_trading,
+            paper_trading_capital=self.settings.trading.paper_trading_capital
         )
 
         # Initialize strategy
