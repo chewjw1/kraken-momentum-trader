@@ -14,7 +14,7 @@ strategy:
 
   # RSI Configuration - widened bands for more signals
   rsi_period: 14
-  rsi_oversold: 38  # Raised from 30 - triggers buy signals earlier
+  rsi_oversold: 50  # TEMP TEST VALUE (was 38) - very lenient for testing trades
   rsi_overbought: 62  # Lowered from 70 - triggers sell signals earlier
 
   # EMA Configuration
@@ -23,7 +23,7 @@ strategy:
 
   # Volume Configuration
   volume_sma_period: 20
-  volume_threshold: 1.25  # Reduced from 1.5 - less strict volume requirement
+  volume_threshold: 0.5  # TEMP TEST VALUE (was 1.25) - very lenient for testing trades
 
 risk:
   # Position Limits
@@ -79,7 +79,7 @@ notifications:
 # Machine Learning Signal Enhancement
 ml:
   enabled: true  # Enable ML-based signal filtering
-  confidence_threshold: 0.6  # Min ML confidence to approve signals (0.5-1.0)
+  confidence_threshold: 0.1  # TEMP TEST VALUE (was 0.6) - very lenient for testing trades
   model_dir: "data/ml/models"
 
   # Auto-retraining triggers
