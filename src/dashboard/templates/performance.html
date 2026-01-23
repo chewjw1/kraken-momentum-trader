@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Performance - Kraken Trader{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold">Performance Analytics</h1>
+
+    <!-- Key Metrics -->
+    <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Total Trades</div>
+            <div class="text-xl font-bold">{{ metrics.total_trades }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Wins / Losses</div>
+            <div class="text-xl font-bold">
+                <span class="text-green-400">{{ metrics.wins }}</span> /
+                <span class="text-red-400">{{ metrics.losses }}</span>
+            </div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Win Rate</div>
+            <div class="text-xl font-bold">{{ "%.1f"|format(metrics.win_rate) }}%</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Profit Factor</div>
+            <div class="text-xl font-bold">{{ "%.2f"|format(metrics.profit_factor) }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Best Trade</div>
+            <div class="text-xl font-bold text-green-400">${{ "%.2f"|format(metrics.best_trade) }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Worst Trade</div>
+            <div class="text-xl font-bold text-red-400">${{ "%.2f"|format(metrics.worst_trade) }}</div>
+        </div>
+    </div>
+
+    <!-- Equity Curve Chart -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 class="text-lg font-medium mb-4">Equity Curve</h2>
+        {% if equity_curve|length > 1 %}
+        <canvas id="equityChart" height="100"></canvas>
+        {% else %}
+        <p class="text-gray-400">No trade data available for equity curve</p>
+        {% endif %}
+    </div>
+
+    <!-- Daily P&L Chart -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 class="text-lg font-medium mb-4">Daily P&L (Last 30 Days)</h2>
+        {% if daily_metrics %}
+        <canvas id="dailyPnlChart" height="100"></canvas>
+        {% else %}
+        <p class="text-gray-400">No daily metrics available</p>
+        {% endif %}
+    </div>
+
+    <!-- ML Stats -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 class="text-lg font-medium mb-4">ML Model Statistics</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+                <div class="text-gray-400 text-sm">Training Samples</div>
+                <div class="text-xl font-bold">{{ ml_stats.total_samples }}</div>
+            </div>
+            <div>
+                <div class="text-gray-400 text-sm">Sample Win Rate</div>
+                <div class="text-xl font-bold">{{ "%.1f"|format(ml_stats.win_rate) }}%</div>
+            </div>
+            <div>
+                <div class="text-gray-400 text-sm">Pending Trades</div>
+                <div class="text-xl font-bold">{{ ml_stats.pending_trades }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    {% if equity_curve|length > 1 %}
+    // Equity Curve Chart
+    const equityData = {{ equity_curve | tojson }};
+    const equityCtx = document.getElementById('equityChart').getContext('2d');
+    new Chart(equityCtx, {
+        type: 'line',
+        data: {
+            labels: equityData.map((d, i) => i === 0 ? 'Start' : d.date),
+            datasets: [{
+                label: 'Equity',
+                data: equityData.map(d => d.equity),
+                borderColor: '#3B82F6',
+                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                fill: true,
+                tension: 0.4,
+                pointRadius: equityData.length > 50 ? 0 : 3
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: {
+                    grid: { color: '#374151' },
+                    ticks: { color: '#9CA3AF' }
+                },
+                x: {
+                    grid: { color: '#374151' },
+                    ticks: { color: '#9CA3AF', maxTicksLimit: 10 }
+                }
+            }
+        }
+    });
+    {% endif %}
+
+    {% if daily_metrics %}
+    // Daily P&L Chart
+    const dailyData = {{ daily_metrics | tojson }};
+    const dailyCtx = document.getElementById('dailyPnlChart').getContext('2d');
+    new Chart(dailyCtx, {
+        type: 'bar',
+        data: {
+            labels: dailyData.map(d => d.date),
+            datasets: [{
+                label: 'Daily P&L',
+                data: dailyData.map(d => d.pnl),
+                backgroundColor: dailyData.map(d => d.pnl >= 0 ? '#10B981' : '#EF4444')
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: {
+                    grid: { color: '#374151' },
+                    ticks: { color: '#9CA3AF' }
+                },
+                x: {
+                    grid: { color: '#374151' },
+                    ticks: { color: '#9CA3AF' }
+                }
+            }
+        }
+    });
+    {% endif %}
+</script>
+{% endblock %}

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Kraken Momentum Trader{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <nav class="bg-gray-800 border-b border-gray-700">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <span class="text-xl font-bold text-blue-400">Kraken Trader</span>
+                    <div class="ml-10 flex items-baseline space-x-4">
+                        <a href="{{ url_for('main.dashboard') }}"
+                           class="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700
+                                  {% if request.endpoint == 'main.dashboard' %}bg-gray-700{% endif %}">
+                            Dashboard
+                        </a>
+                        <a href="{{ url_for('main.trades') }}"
+                           class="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700
+                                  {% if request.endpoint == 'main.trades' %}bg-gray-700{% endif %}">
+                            Trades
+                        </a>
+                        <a href="{{ url_for('main.performance') }}"
+                           class="px-3 py-2 rounded-md text-sm font-medium hover:bg-gray-700
+                                  {% if request.endpoint == 'main.performance' %}bg-gray-700{% endif %}">
+                            Performance
+                        </a>
+                    </div>
+                </div>
+                <a href="{{ url_for('main.logout') }}"
+                   class="text-gray-400 hover:text-white text-sm">Logout</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

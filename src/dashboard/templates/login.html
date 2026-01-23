@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Kraken Trader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 min-h-screen flex items-center justify-center">
+    <div class="bg-gray-800 p-8 rounded-lg shadow-lg w-full max-w-md">
+        <h1 class="text-2xl font-bold text-blue-400 text-center mb-6">Kraken Momentum Trader</h1>
+
+        {% if error %}
+        <div class="bg-red-900/50 border border-red-500 text-red-300 px-4 py-3 rounded mb-4">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        <form method="post">
+            <div class="mb-4">
+                <label class="block text-gray-300 text-sm font-medium mb-2">Username</label>
+                <input type="text" name="username" required
+                       class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md
+                              text-white focus:outline-none focus:border-blue-500">
+            </div>
+            <div class="mb-6">
+                <label class="block text-gray-300 text-sm font-medium mb-2">Password</label>
+                <input type="password" name="password" required
+                       class="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md
+                              text-white focus:outline-none focus:border-blue-500">
+            </div>
+            <button type="submit"
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4
+                           rounded-md transition duration-150">
+                Sign In
+            </button>
+        </form>
+    </div>
+</body>
+</html>

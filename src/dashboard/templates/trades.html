@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Trade History - Kraken Trader{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <h1 class="text-2xl font-bold">Trade History</h1>
+
+    <!-- Filters -->
+    <form class="bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Pair</label>
+                <select name="pair" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white">
+                    <option value="">All Pairs</option>
+                    {% for p in pairs %}
+                    <option value="{{ p }}" {% if p == current_pair %}selected{% endif %}>{{ p }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Start Date</label>
+                <input type="date" name="start" value="{{ start_date or '' }}"
+                       class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white">
+            </div>
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">End Date</label>
+                <input type="date" name="end" value="{{ end_date or '' }}"
+                       class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white">
+            </div>
+            <div class="flex items-end">
+                <button type="submit" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-white">
+                    Filter
+                </button>
+            </div>
+        </div>
+    </form>
+
+    <!-- Trades Table -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+        <div class="px-4 py-3 border-b border-gray-700">
+            <span class="text-gray-400">{{ total }} trades found</span>
+        </div>
+        <div class="overflow-x-auto">
+            {% if trades %}
+            <table class="w-full">
+                <thead>
+                    <tr class="text-gray-400 text-sm text-left bg-gray-900">
+                        <th class="px-4 py-3">Pair</th>
+                        <th class="px-4 py-3">Side</th>
+                        <th class="px-4 py-3">Entry Price</th>
+                        <th class="px-4 py-3">Exit Price</th>
+                        <th class="px-4 py-3">Size</th>
+                        <th class="px-4 py-3">P&L</th>
+                        <th class="px-4 py-3">P&L %</th>
+                        <th class="px-4 py-3">Exit Reason</th>
+                        <th class="px-4 py-3">Exit Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for trade in trades %}
+                    <tr class="border-t border-gray-700 hover:bg-gray-700/50">
+                        <td class="px-4 py-3 font-medium">{{ trade.pair }}</td>
+                        <td class="px-4 py-3">{{ trade.side | upper }}</td>
+                        <td class="px-4 py-3">${{ "%.2f"|format(trade.entry_price) }}</td>
+                        <td class="px-4 py-3">${{ "%.2f"|format(trade.exit_price) }}</td>
+                        <td class="px-4 py-3">{{ "%.6f"|format(trade.size) }}</td>
+                        <td class="px-4 py-3 {% if trade.pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                            ${{ "%.2f"|format(trade.pnl) }}
+                        </td>
+                        <td class="px-4 py-3 {% if trade.pnl_percent >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ "%.2f"|format(trade.pnl_percent) }}%
+                        </td>
+                        <td class="px-4 py-3 text-gray-400">{{ trade.exit_reason or '-' }}</td>
+                        <td class="px-4 py-3 text-gray-400">{{ trade.exit_time[:16] if trade.exit_time else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-gray-400 p-4">No trades found</p>
+            {% endif %}
+        </div>
+
+        <!-- Pagination -->
+        {% if total_pages > 1 %}
+        <div class="px-4 py-3 border-t border-gray-700 flex justify-between items-center">
+            <div class="text-gray-400 text-sm">Page {{ page }} of {{ total_pages }}</div>
+            <div class="flex gap-2">
+                {% if page > 1 %}
+                <a href="?page={{ page - 1 }}{% if current_pair %}&pair={{ current_pair }}{% endif %}{% if start_date %}&start={{ start_date }}{% endif %}{% if end_date %}&end={{ end_date }}{% endif %}"
+                   class="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 text-white">Prev</a>
+                {% endif %}
+                {% if page < total_pages %}
+                <a href="?page={{ page + 1 }}{% if current_pair %}&pair={{ current_pair }}{% endif %}{% if start_date %}&start={{ start_date }}{% endif %}{% if end_date %}&end={{ end_date }}{% endif %}"
+                   class="px-3 py-1 bg-gray-700 rounded hover:bg-gray-600 text-white">Next</a>
+                {% endif %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

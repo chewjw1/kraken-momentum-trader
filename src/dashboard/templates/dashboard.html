@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Kraken Trader{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Status Bar -->
+    <div class="flex items-center justify-between">
+        <h1 class="text-2xl font-bold">Dashboard</h1>
+        <span class="px-3 py-1 rounded-full text-sm
+                     {% if state == 'idle' %}bg-green-900 text-green-300
+                     {% elif state == 'in_position' %}bg-blue-900 text-blue-300
+                     {% elif state == 'error' %}bg-red-900 text-red-300
+                     {% else %}bg-gray-700 text-gray-300{% endif %}">
+            {{ state | upper }}
+        </span>
+    </div>
+
+    <!-- Key Metrics Cards -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Capital</div>
+            <div class="text-2xl font-bold text-white">${{ "%.2f"|format(capital) }}</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Total P&L</div>
+            <div class="text-2xl font-bold {% if metrics.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                ${{ "%.2f"|format(metrics.total_pnl) }}
+            </div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Win Rate</div>
+            <div class="text-2xl font-bold text-white">{{ "%.1f"|format(metrics.win_rate) }}%</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Total Trades</div>
+            <div class="text-2xl font-bold text-white">{{ metrics.total_trades }}</div>
+        </div>
+    </div>
+
+    <!-- Open Positions -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+            <h2 class="text-lg font-medium">Open Positions</h2>
+        </div>
+        <div class="p-4">
+            {% if positions %}
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="text-gray-400 text-sm text-left">
+                            <th class="pb-2">Pair</th>
+                            <th class="pb-2">Side</th>
+                            <th class="pb-2">Entry Price</th>
+                            <th class="pb-2">Size</th>
+                            <th class="pb-2">Value (USD)</th>
+                            <th class="pb-2">Entries</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pos in positions %}
+                        <tr class="border-t border-gray-700">
+                            <td class="py-2 font-medium">{{ pos.pair }}</td>
+                            <td class="py-2 {% if pos.side == 'long' %}text-green-400{% else %}text-red-400{% endif %}">
+                                {{ pos.side | upper }}
+                            </td>
+                            <td class="py-2">${{ "%.2f"|format(pos.entry_price) }}</td>
+                            <td class="py-2">{{ "%.6f"|format(pos.size) }}</td>
+                            <td class="py-2">${{ "%.2f"|format(pos.total_cost_usd) }}</td>
+                            <td class="py-2">{{ pos.num_entries }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-gray-400">No open positions</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Recent Trades -->
+    <div class="bg-gray-800 rounded-lg border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700 flex justify-between items-center">
+            <h2 class="text-lg font-medium">Recent Trades</h2>
+            <a href="{{ url_for('main.trades') }}" class="text-blue-400 text-sm hover:underline">View All</a>
+        </div>
+        <div class="overflow-x-auto">
+            {% if recent_trades %}
+            <table class="w-full">
+                <thead>
+                    <tr class="text-gray-400 text-sm text-left">
+                        <th class="px-4 py-2">Pair</th>
+                        <th class="px-4 py-2">Entry</th>
+                        <th class="px-4 py-2">Exit</th>
+                        <th class="px-4 py-2">P&L</th>
+                        <th class="px-4 py-2">P&L %</th>
+                        <th class="px-4 py-2">Exit Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for trade in recent_trades %}
+                    <tr class="border-t border-gray-700">
+                        <td class="px-4 py-2 font-medium">{{ trade.pair }}</td>
+                        <td class="px-4 py-2">${{ "%.2f"|format(trade.entry_price) }}</td>
+                        <td class="px-4 py-2">${{ "%.2f"|format(trade.exit_price) }}</td>
+                        <td class="px-4 py-2 {% if trade.pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                            ${{ "%.2f"|format(trade.pnl) }}
+                        </td>
+                        <td class="px-4 py-2 {% if trade.pnl_percent >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ "%.2f"|format(trade.pnl_percent) }}%
+                        </td>
+                        <td class="px-4 py-2 text-gray-400">{{ trade.exit_time[:16] if trade.exit_time else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-gray-400 p-4">No trades yet</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Performance by Pair -->
+    {% if pairs_summary %}
+    <div class="bg-gray-800 rounded-lg border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+            <h2 class="text-lg font-medium">Performance by Pair</h2>
+        </div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {% for pair in pairs_summary %}
+            <div class="bg-gray-900 rounded p-3">
+                <div class="font-medium">{{ pair.pair }}</div>
+                <div class="text-sm text-gray-400 mt-1">
+                    {{ pair.trades }} trades |
+                    {{ pair.wins }} wins |
+                    <span class="{% if pair.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                        ${{ "%.2f"|format(pair.total_pnl) }}
+                    </span>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
