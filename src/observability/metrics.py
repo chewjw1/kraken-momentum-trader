@@ -80,6 +80,17 @@ class MetricsTracker:
         self._longest_win_streak = 0
         self._longest_loss_streak = 0
 
+    def set_initial_capital(self, capital: float) -> None:
+        """
+        Set the initial capital (call before any trades are recorded).
+
+        Args:
+            capital: The actual starting capital.
+        """
+        self.initial_capital = capital
+        self.current_capital = capital
+        self.peak_capital = capital
+
     def record_trade(self, trade: Trade) -> None:
         """
         Record a completed trade and update metrics.

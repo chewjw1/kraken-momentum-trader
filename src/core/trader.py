@@ -817,6 +817,11 @@ class Trader:
             if usd_balance:
                 capital = usd_balance.total
                 self.risk_manager.set_capital(capital)
+
+                # Also update metrics tracker if no trades recorded yet (fresh start)
+                if not self.metrics.trades:
+                    self.metrics.set_initial_capital(capital)
+
                 logger.info(f"Capital updated: ${capital:.2f}")
 
         except Exception as e:
