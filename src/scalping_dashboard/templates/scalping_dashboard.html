@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scalping Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta http-equiv="refresh" content="60">
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-3xl font-bold">Scalping Dashboard</h1>
+                <p class="text-gray-400">Mean-reversion strategy with adaptive pair management</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <span class="px-3 py-1 rounded-full text-sm
+                    {% if paper_trading %}bg-yellow-900 text-yellow-300{% else %}bg-red-900 text-red-300{% endif %}">
+                    {% if paper_trading %}PAPER{% else %}LIVE{% endif %}
+                </span>
+                <span class="text-gray-400 text-sm">
+                    Updated: {{ last_update[:19] if last_update else 'Never' }}
+                </span>
+            </div>
+        </div>
+
+        <!-- Key Metrics -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Capital</div>
+                <div class="text-2xl font-bold">${{ "%.2f"|format(capital) }}</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Total P&L</div>
+                <div class="text-2xl font-bold {% if metrics.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                    ${{ "%.2f"|format(metrics.total_pnl) }}
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Win Rate</div>
+                <div class="text-2xl font-bold {% if metrics.win_rate >= 50 %}text-green-400{% else %}text-yellow-400{% endif %}">
+                    {{ "%.1f"|format(metrics.win_rate) }}%
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Total Trades</div>
+                <div class="text-2xl font-bold">{{ metrics.total_trades }}</div>
+                <div class="text-xs text-gray-500">{{ metrics.wins }}W / {{ metrics.losses }}L</div>
+            </div>
+        </div>
+
+        <!-- Pair Status -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Enabled Pairs -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+                    <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <h2 class="text-lg font-medium">Enabled Pairs ({{ enabled_pairs|length }})</h2>
+                </div>
+                <div class="p-4">
+                    {% if enabled_pairs %}
+                    <div class="space-y-2">
+                        {% for pair in enabled_pairs %}
+                        {% set p = pairs.get(pair, {}) %}
+                        <div class="flex items-center justify-between p-2 bg-gray-700 rounded">
+                            <span class="font-medium">{{ pair }}</span>
+                            <div class="flex items-center gap-4 text-sm">
+                                <span class="text-gray-400">{{ p.total_trades or 0 }} trades</span>
+                                <span class="{% if (p.total_pnl or 0) >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                    ${{ "%.2f"|format(p.total_pnl or 0) }}
+                                </span>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-gray-400">No enabled pairs</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Disabled Pairs -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+                    <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+                    <h2 class="text-lg font-medium">Disabled Pairs ({{ disabled_pairs|length }})</h2>
+                </div>
+                <div class="p-4">
+                    {% if disabled_pairs %}
+                    <div class="space-y-2">
+                        {% for pair in disabled_pairs %}
+                        {% set p = pairs.get(pair, {}) %}
+                        <div class="p-2 bg-gray-700 rounded">
+                            <div class="flex items-center justify-between">
+                                <span class="font-medium text-gray-400">{{ pair }}</span>
+                                <span class="text-red-400 text-sm">${{ "%.2f"|format(p.total_pnl or 0) }}</span>
+                            </div>
+                            <div class="text-xs text-gray-500 mt-1">
+                                {{ p.disabled_reason or 'Unknown reason' }}
+                            </div>
+                            {% if p.cooldown_until %}
+                            <div class="text-xs text-yellow-500 mt-1">
+                                Cooldown until: {{ p.cooldown_until[:19] }}
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-green-400">All pairs performing well!</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Open Positions -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 mb-8">
+            <div class="px-4 py-3 border-b border-gray-700">
+                <h2 class="text-lg font-medium">Open Positions ({{ positions|length }})</h2>
+            </div>
+            <div class="p-4">
+                {% if positions %}
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead>
+                            <tr class="text-gray-400 text-sm text-left">
+                                <th class="pb-2">Pair</th>
+                                <th class="pb-2">Entry Price</th>
+                                <th class="pb-2">Size (USD)</th>
+                                <th class="pb-2">Entry Time</th>
+                                <th class="pb-2">Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for pair, pos in positions.items() %}
+                            <tr class="border-t border-gray-700">
+                                <td class="py-2 font-medium">{{ pair }}</td>
+                                <td class="py-2">${{ "%.2f"|format(pos.entry_price) }}</td>
+                                <td class="py-2">${{ "%.2f"|format(pos.size_usd) }}</td>
+                                <td class="py-2 text-gray-400 text-sm">{{ pos.entry_time[:19] }}</td>
+                                <td class="py-2 text-gray-400 text-sm">{{ pos.reason[:50] }}...</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-gray-400">No open positions</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Pair Performance Table -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700">
+            <div class="px-4 py-3 border-b border-gray-700">
+                <h2 class="text-lg font-medium">Pair Performance Details</h2>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="text-gray-400 text-sm text-left">
+                            <th class="px-4 py-2">Pair</th>
+                            <th class="px-4 py-2">Status</th>
+                            <th class="px-4 py-2">Trades</th>
+                            <th class="px-4 py-2">W/L</th>
+                            <th class="px-4 py-2">Win Rate</th>
+                            <th class="px-4 py-2">P&L</th>
+                            <th class="px-4 py-2">Consec. Losses</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pair, p in pairs.items() %}
+                        {% set wr = (p.wins / p.total_trades * 100) if p.total_trades > 0 else 0 %}
+                        <tr class="border-t border-gray-700 {% if not p.enabled %}opacity-50{% endif %}">
+                            <td class="px-4 py-2 font-medium">{{ pair }}</td>
+                            <td class="px-4 py-2">
+                                {% if p.enabled %}
+                                <span class="text-green-400">Active</span>
+                                {% else %}
+                                <span class="text-red-400">Disabled</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-4 py-2">{{ p.total_trades }}</td>
+                            <td class="px-4 py-2">{{ p.wins }}/{{ p.losses }}</td>
+                            <td class="px-4 py-2 {% if wr >= 50 %}text-green-400{% elif wr >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                                {{ "%.1f"|format(wr) }}%
+                            </td>
+                            <td class="px-4 py-2 {% if p.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                ${{ "%.2f"|format(p.total_pnl) }}
+                            </td>
+                            <td class="px-4 py-2 {% if p.consecutive_losses >= 3 %}text-red-400{% else %}text-gray-400{% endif %}">
+                                {{ p.consecutive_losses }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="mt-8 text-center text-gray-500 text-sm">
+            <p>Auto-refreshes every 60 seconds | Strategy: 4.5% TP / 2% SL / 2 confirmations</p>
+        </div>
+    </div>
+</body>
+</html>
