@@ -40,11 +40,16 @@ indicators:
   volume:
     spike_threshold: 1.5    # 1.5x average volume
 
-# Trading pairs - only profitable pairs from backtest
+# Trading pairs - start with all, adaptive manager will disable losers
 pairs:
-  - SOL/USD
-  # Note: Other pairs underperformed in current market conditions
-  # Re-run backtest periodically to find new profitable pairs
+  - SOL/USD      # Profitable in backtest
+  - BTC/USD      # Let adaptive manager evaluate
+  - ETH/USD      # Let adaptive manager evaluate
+  - XRP/USD      # Let adaptive manager evaluate
+  - DOGE/USD     # Let adaptive manager evaluate
+  - ADA/USD      # Let adaptive manager evaluate
+  - LINK/USD     # Let adaptive manager evaluate
+  - AVAX/USD     # Let adaptive manager evaluate
 
 # Adaptive pair management
 adaptive:
