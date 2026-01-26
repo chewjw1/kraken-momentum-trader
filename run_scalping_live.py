@@ -93,6 +93,9 @@ class ScalpingTrader:
             'start_time': datetime.now(timezone.utc).isoformat()
         }
 
+        # Initialize logger BEFORE loading state
+        self.logger = get_logger(__name__)
+
         # Register pairs
         for pair in self.pairs:
             self.pair_manager.register_pair(pair)
@@ -100,7 +103,6 @@ class ScalpingTrader:
         # Load saved state
         self._load_state()
 
-        self.logger = get_logger(__name__)
         self.logger.info(
             "Scalping trader initialized",
             pairs=self.pairs,
