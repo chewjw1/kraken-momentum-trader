@@ -172,7 +172,8 @@ class SignalPredictor:
     def should_take_signal(
         self,
         signal_type: str,
-        market_data: MarketData
+        market_data: MarketData,
+        confidence_threshold_override: float = None
     ) -> tuple[bool, float, str]:
         """
         Determine if a trading signal should be acted upon.
@@ -180,6 +181,8 @@ class SignalPredictor:
         Args:
             signal_type: "buy" or "sell" from rule-based strategy.
             market_data: Current market data.
+            confidence_threshold_override: Optional per-pair confidence threshold.
+                                          If provided, overrides the default threshold.
 
         Returns:
             Tuple of (should_trade, confidence, reason).
@@ -194,12 +197,15 @@ class SignalPredictor:
             # Prediction failed - pass through signal with warning
             return True, 0.5, "ML prediction failed"
 
+        # Use override threshold if provided, otherwise use default
+        threshold = confidence_threshold_override if confidence_threshold_override is not None else self.confidence_threshold
+
         # For buy signals, check if ML agrees
         if signal_type == "buy":
-            if prediction.win_probability >= self.confidence_threshold:
+            if prediction.win_probability >= threshold:
                 return True, prediction.win_probability, f"ML confidence: {prediction.win_probability:.1%}"
             else:
-                return False, prediction.win_probability, f"ML confidence too low: {prediction.win_probability:.1%}"
+                return False, prediction.win_probability, f"ML confidence too low: {prediction.win_probability:.1%} (threshold: {threshold:.1%})"
 
         # For sell signals, always allow (exiting positions is generally safer)
         if signal_type == "sell":

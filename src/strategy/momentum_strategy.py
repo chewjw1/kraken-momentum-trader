@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..config.settings import StrategyConfig, get_settings
+from ..config.settings import StrategyConfig, RiskConfig, get_settings
 from ..observability.logger import get_logger
 from .base_strategy import (
     BaseStrategy,
@@ -56,12 +56,18 @@ class MomentumStrategy(BaseStrategy):
     confirmation.
     """
 
-    def __init__(self, config: Optional[StrategyConfig] = None):
+    def __init__(
+        self,
+        config: Optional[StrategyConfig] = None,
+        risk_config: Optional[RiskConfig] = None
+    ):
         """
         Initialize momentum strategy.
 
         Args:
             config: Strategy configuration. If None, loaded from settings.
+            risk_config: Risk configuration for trailing stops and Martingale.
+                        If None, loaded from global settings.
         """
         super().__init__(name="momentum")
 
@@ -85,8 +91,11 @@ class MomentumStrategy(BaseStrategy):
             high_volume_threshold=config.volume_threshold
         )
 
+        # Use provided risk_config or fall back to global settings
+        if risk_config is None:
+            risk_config = get_settings().risk
+
         # Trailing stop parameters (from risk config)
-        risk_config = get_settings().risk
         self.use_trailing_stop = risk_config.use_trailing_stop
         self.trailing_stop_percent = risk_config.trailing_stop_percent
         self.trailing_stop_activation_percent = risk_config.trailing_stop_activation_percent

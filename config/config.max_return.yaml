@@ -1,0 +1,78 @@
+pair_parameters:
+  BTC/USD:
+    strategy:
+      rsi_oversold: 55
+      rsi_overbought: 60
+      volume_threshold: 1.5
+    ml:
+      confidence_threshold: 0.6000000000000001
+    risk:
+      trailing_stop_percent: 9.0
+      trailing_stop_activation_percent: 6.0
+      take_profit_percent: 10.0
+      martingale:
+        enabled: true
+        max_entries: 4
+        size_multiplier: 1.2000000000000002
+        add_on_drop_percent: 4.5
+    _optimization:
+      return_pct: 25.03955271832079
+      trades: 15
+  ETH/USD:
+    strategy:
+      rsi_oversold: 55
+      rsi_overbought: 50
+      volume_threshold: 0.5
+    ml:
+      confidence_threshold: 0.4
+    risk:
+      trailing_stop_percent: 5.0
+      trailing_stop_activation_percent: 8.0
+      take_profit_percent: 11.0
+      martingale:
+        enabled: true
+        max_entries: 2
+        size_multiplier: 1.5
+        add_on_drop_percent: 3.5
+    _optimization:
+      return_pct: 9.733778422259736
+      trades: 47
+  SOL/USD:
+    strategy:
+      rsi_oversold: 55
+      rsi_overbought: 75
+      volume_threshold: 1.1
+    ml:
+      confidence_threshold: 0.65
+    risk:
+      trailing_stop_percent: 8.5
+      trailing_stop_activation_percent: 6.5
+      take_profit_percent: 3.0
+      martingale:
+        enabled: false
+        max_entries: 3
+        size_multiplier: 1.25
+        add_on_drop_percent: 5.0
+    _optimization:
+      return_pct: -1.2632407234132708
+      trades: 12
+  XRP/USD:
+    strategy:
+      rsi_oversold: 50
+      rsi_overbought: 50
+      volume_threshold: 0.3
+    ml:
+      confidence_threshold: 0.3
+    risk:
+      trailing_stop_percent: 3.0
+      trailing_stop_activation_percent: 2.0
+      take_profit_percent: 3.0
+      martingale:
+        enabled: true
+        max_entries: 2
+        size_multiplier: 1.1
+        add_on_drop_percent: 4.0
+    _optimization:
+      return_pct: -12.043947719054424
+      trades: 5
+_info: RETURN-MAXIMIZED CONFIG

@@ -135,7 +135,8 @@ class RiskManager:
     def check_position_size(
         self,
         requested_size_usd: float,
-        pair: str
+        pair: str,
+        available_balance: Optional[float] = None
     ) -> RiskCheck:
         """
         Check and potentially adjust position size.
@@ -143,6 +144,8 @@ class RiskManager:
         Args:
             requested_size_usd: Requested position size in USD.
             pair: Trading pair.
+            available_balance: Available USD balance for trading. If provided,
+                               position size will be capped to this amount.
 
         Returns:
             RiskCheck with adjusted size if needed.
@@ -162,10 +165,31 @@ class RiskManager:
         # Adjust size to fit within limits
         adjusted_size = min(requested_size_usd, max_size, remaining_exposure)
 
+        # Cap by available balance if provided (critical for paper trading)
+        if available_balance is not None:
+            # Leave 1% buffer for fees
+            available_with_buffer = available_balance * 0.99
+            if adjusted_size > available_with_buffer:
+                logger.risk_event(
+                    event_type="position_size_capped_by_balance",
+                    details=f"Capped from ${adjusted_size:.2f} to ${available_with_buffer:.2f} (available balance)",
+                    pair=pair,
+                    available_balance=available_balance
+                )
+                adjusted_size = available_with_buffer
+
         if adjusted_size <= 0:
             return RiskCheck(
                 allowed=False,
-                reason="No capacity for position (exposure limit reached)",
+                reason="No capacity for position (insufficient balance or exposure limit reached)",
+                adjusted_size=0
+            )
+
+        # Minimum position size check
+        if adjusted_size < 10:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Position size too small: ${adjusted_size:.2f} (minimum $10)",
                 adjusted_size=0
             )
 
@@ -189,7 +213,8 @@ class RiskManager:
         additional_size_usd: float,
         current_position_exposure: float,
         num_entries: int,
-        pair: str
+        pair: str,
+        available_balance: Optional[float] = None
     ) -> RiskCheck:
         """
         Check if Martingale add-on is permitted.
@@ -199,6 +224,8 @@ class RiskManager:
             current_position_exposure: Current position exposure in USD.
             num_entries: Current number of entries in position.
             pair: Trading pair.
+            available_balance: Available USD balance for trading. If provided,
+                               add-on size will be capped to this amount.
 
         Returns:
             RiskCheck with adjusted size if needed.
@@ -227,35 +254,58 @@ class RiskManager:
                 reason=f"Circuit breaker active: {state.state.value}"
             )
 
+        # Start with requested size
+        adjusted_size = additional_size_usd
+
         # Check total exposure after add-on (across ALL positions)
         max_exposure = self._total_capital * (self.config.max_total_exposure_percent / 100)
-        new_total_exposure = self._current_exposure + additional_size_usd
+        new_total_exposure = self._current_exposure + adjusted_size
 
         if new_total_exposure > max_exposure:
-            # Adjust size to fit within limits
-            available = max_exposure - self._current_exposure
-            if available <= 0:
+            # Adjust size to fit within exposure limits
+            available_exposure = max_exposure - self._current_exposure
+            if available_exposure <= 0:
                 return RiskCheck(
                     allowed=False,
                     reason=f"Max exposure reached: ${current_position_exposure:.2f}/${max_exposure:.2f}"
                 )
+            adjusted_size = available_exposure
 
-            logger.risk_event(
-                event_type="martingale_size_reduced",
-                details=f"Reduced from ${additional_size_usd:.2f} to ${available:.2f}",
-                pair=pair
+        # Cap by available balance if provided (critical for paper trading)
+        if available_balance is not None:
+            # Leave 1% buffer for fees
+            available_with_buffer = available_balance * 0.99
+            if adjusted_size > available_with_buffer:
+                if available_with_buffer <= 0:
+                    return RiskCheck(
+                        allowed=False,
+                        reason=f"Insufficient balance for Martingale add-on (available: ${available_balance:.2f})"
+                    )
+                adjusted_size = available_with_buffer
+
+        # Minimum position size check
+        if adjusted_size < 10:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Martingale add-on size too small: ${adjusted_size:.2f} (minimum $10)"
             )
 
+        if adjusted_size < additional_size_usd:
+            logger.risk_event(
+                event_type="martingale_size_reduced",
+                details=f"Reduced from ${additional_size_usd:.2f} to ${adjusted_size:.2f}",
+                pair=pair
+            )
             return RiskCheck(
                 allowed=True,
                 reason="Martingale add-on approved (size adjusted)",
-                adjusted_size=available
+                adjusted_size=adjusted_size
             )
 
         return RiskCheck(
             allowed=True,
             reason="Martingale add-on approved",
-            adjusted_size=additional_size_usd
+            adjusted_size=adjusted_size
         )
 
     def calculate_martingale_size(

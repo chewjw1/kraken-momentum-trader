@@ -3,6 +3,11 @@
 # HTTP Requests
 requests>=2.31.0
 
+# Exchange APIs & Optimization
+ccxt>=4.0.0
+optuna>=3.5.0
+yfinance>=0.2.0
+
 # Web Dashboard
 flask>=3.0.0
 

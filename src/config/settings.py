@@ -66,6 +66,9 @@ class RiskConfig:
     trailing_stop_activation_percent: float = 5.0  # Minimum profit before trailing activates
     initial_stop_loss_percent: float = 0.0  # Initial stop loss (0 = disabled)
 
+    # Take profit configuration (0 = disabled)
+    take_profit_percent: float = 0.0  # Exit when profit reaches this %
+
     # Martingale configuration
     martingale: MartingaleConfig = None
 

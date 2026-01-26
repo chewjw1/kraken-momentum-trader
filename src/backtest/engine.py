@@ -44,12 +44,14 @@ class BacktestEngine:
 
     Processes historical candles one by one and simulates the trading strategy.
     Reuses existing MomentumStrategy for signal generation.
+    Supports per-pair settings for Martingale, take-profit, etc.
     """
 
     def __init__(
         self,
         config: BacktestConfig,
-        strategy: Optional[MomentumStrategy] = None
+        strategy: Optional[MomentumStrategy] = None,
+        pair_settings: Optional["PairSettings"] = None  # Per-pair override
     ):
         """
         Initialize the backtest engine.
@@ -57,6 +59,7 @@ class BacktestEngine:
         Args:
             config: Backtest configuration.
             strategy: Optional strategy instance (creates one if not provided).
+            pair_settings: Optional per-pair settings (overrides global settings).
         """
         self.config = config
         self.strategy = strategy or MomentumStrategy()
@@ -74,9 +77,14 @@ class BacktestEngine:
         # Trade counter for IDs
         self._trade_counter = 0
 
-        # Martingale settings from strategy config
+        # Get settings - use pair_settings if provided, otherwise global settings
         settings = get_settings()
-        martingale = settings.risk.martingale
+        if pair_settings:
+            risk_settings = pair_settings.risk
+        else:
+            risk_settings = settings.risk
+
+        martingale = risk_settings.martingale
         # Handle case where martingale might be a dict (from YAML loading)
         if isinstance(martingale, dict):
             self.martingale_enabled = martingale.get("enabled", True)
@@ -87,8 +95,11 @@ class BacktestEngine:
             self.martingale_max_entries = martingale.max_entries
             self.martingale_size_multiplier = martingale.size_multiplier
 
+        # Take profit setting (default 0 = disabled)
+        self.take_profit_percent = getattr(risk_settings, 'take_profit_percent', 0.0)
+
         # Position sizing
-        self.max_position_percent = settings.risk.max_position_percent
+        self.max_position_percent = risk_settings.max_position_percent
         self.base_position_usd = config.initial_capital * (self.max_position_percent / 100)
 
     def run(self, candles: List[OHLC]) -> BacktestResults:
@@ -157,6 +168,16 @@ class BacktestEngine:
         if self.position:
             # Update peak price (use candle high for optimistic tracking)
             self.position.update_peak_price(candle_high)
+
+            # Check take-profit first (use candle high for optimistic exit)
+            if self.take_profit_percent > 0:
+                pnl_percent = ((candle_high - self.position.entry_price) / self.position.entry_price) * 100
+                if pnl_percent >= self.take_profit_percent:
+                    # Exit at the take-profit price
+                    take_profit_price = self.position.entry_price * (1 + self.take_profit_percent / 100)
+                    self._close_position(take_profit_price, timestamp, f"Take profit {self.take_profit_percent:.1f}%")
+                    self._record_equity(timestamp)
+                    return
 
             # Check trailing stop (use candle low for conservative exit check)
             should_close, should_activate, reason = self._check_trailing_stop(candle_low)

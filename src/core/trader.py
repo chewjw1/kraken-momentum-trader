@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ..config.settings import Settings, get_settings
+from ..config.pair_config import PairConfigManager, PairSettings
 from ..exchange.kraken_client import (
     KrakenClient,
     KrakenAPIError,
@@ -65,8 +66,38 @@ class Trader:
             paper_trading_capital=self.settings.trading.paper_trading_capital
         )
 
-        # Initialize strategy
+        # Initialize strategy (default/fallback strategy)
         self.strategy = strategy or MomentumStrategy(self.settings.strategy)
+
+        # Load per-pair optimized config if available
+        self.pair_config_manager = PairConfigManager()
+        optimized_config_path = "config/config.optimized.yaml"
+        if self.pair_config_manager.load_config(optimized_config_path):
+            logger.info(
+                "Loaded per-pair optimized config",
+                path=optimized_config_path,
+                pairs=self.pair_config_manager.get_all_pairs()
+            )
+            # Create per-pair strategies with optimized settings (both strategy AND risk config)
+            self._pair_strategies: dict[str, MomentumStrategy] = {}
+            for pair in self.pair_config_manager.get_all_pairs():
+                pair_settings = self.pair_config_manager.get_pair_settings(pair)
+                self._pair_strategies[pair] = MomentumStrategy(
+                    config=pair_settings.strategy,
+                    risk_config=pair_settings.risk
+                )
+                logger.info(
+                    f"Created optimized strategy for {pair}",
+                    rsi_oversold=pair_settings.strategy.rsi_oversold,
+                    rsi_overbought=pair_settings.strategy.rsi_overbought,
+                    take_profit=pair_settings.risk.take_profit_percent,
+                    trailing_stop=pair_settings.risk.trailing_stop_percent,
+                    martingale_enabled=pair_settings.martingale_enabled,
+                    martingale_drop=pair_settings.risk.martingale.add_on_drop_percent if pair_settings.martingale_enabled else "N/A"
+                )
+        else:
+            logger.info("No per-pair config found, using global settings")
+            self._pair_strategies = {}
 
         # Initialize metrics tracker
         self.metrics = MetricsTracker()
@@ -268,6 +299,10 @@ class Trader:
         """
         logger.debug(f"Processing {pair}")
 
+        # Get per-pair settings (or fall back to global)
+        pair_settings = self.pair_config_manager.get_pair_settings(pair)
+        strategy = self._pair_strategies.get(pair, self.strategy)
+
         # Get market data
         market_data = self._get_market_data(pair)
         if not market_data:
@@ -275,25 +310,47 @@ class Trader:
 
         # Check if we have a position in this pair
         current_position = self._get_current_position(pair, market_data)
+        current_price = market_data.ticker.last if market_data.ticker else 0
 
         # Update peak price if we have a position in this pair
         if current_position:
-            current_price = market_data.ticker.last if market_data.ticker else 0
             self.state_machine.update_peak_price(pair, current_price)
 
         # Start analysis
         self.state_machine.start_analysis()
 
+        # Get position state for this pair
+        pos = self.state_machine.get_position(pair)
+
+        # === TAKE-PROFIT CHECK (per-pair) ===
+        if pos and pair_settings.take_profit_percent > 0:
+            pnl_percent = ((current_price - pos.entry_price) / pos.entry_price) * 100
+            if pnl_percent >= pair_settings.take_profit_percent:
+                logger.info(
+                    f"Take-profit triggered for {pair}: {pnl_percent:.2f}% >= {pair_settings.take_profit_percent}%"
+                )
+                # Create exit signal for take-profit
+                from ..strategy.base_strategy import TradingSignal
+                take_profit_signal = TradingSignal(
+                    signal_type=SignalType.CLOSE_LONG,
+                    pair=pair,
+                    price=current_price,
+                    strength=1.0,
+                    reason=f"Take profit {pair_settings.take_profit_percent:.1f}%",
+                    indicators={}
+                )
+                self._handle_signal(take_profit_signal, current_position, market_data)
+                return
+
         # Get peak price and trailing stop status for strategy (pair-specific)
         peak_price = None
         trailing_stop_active = False
-        pos = self.state_machine.get_position(pair)
         if pos:
             peak_price = pos.peak_price
             trailing_stop_active = pos.trailing_stop_active
 
-        # Get signal from strategy (pass trailing stop info)
-        signal = self.strategy.analyze(market_data, current_position)
+        # Get signal from per-pair strategy
+        signal = strategy.analyze(market_data, current_position)
 
         # Check if trailing stop should be activated (pair-specific)
         if signal.indicators.get("_should_activate_trailing", False):
@@ -306,24 +363,24 @@ class Trader:
         )
 
         # Check for Martingale add-on opportunity if we have a position in this pair
-        if current_position:
-            current_price = market_data.ticker.last if market_data.ticker else 0
+        # Use per-pair Martingale settings
+        if current_position and pair_settings.martingale_enabled:
             avg_entry = pos.entry_price
 
-            should_add, add_reason = self.strategy.should_add_to_position(
+            should_add, add_reason = strategy.should_add_to_position(
                 market_data=market_data,
                 avg_entry_price=avg_entry,
                 current_price=current_price
             )
 
             if should_add:
-                self._add_to_position(pair, market_data, add_reason)
+                self._add_to_position(pair, market_data, add_reason, pair_settings)
                 self.state_machine.analysis_complete(has_signal=False)
                 return
 
         # Handle signal
         if signal.is_actionable():
-            self._handle_signal(signal, current_position, market_data)
+            self._handle_signal(signal, current_position, market_data, pair_settings)
         else:
             self.state_machine.analysis_complete(has_signal=False)
 
@@ -388,7 +445,8 @@ class Trader:
         self,
         signal,
         current_position: Optional[Position],
-        market_data: MarketData
+        market_data: MarketData,
+        pair_settings: Optional[PairSettings] = None
     ) -> None:
         """
         Handle a trading signal.
@@ -397,13 +455,14 @@ class Trader:
             signal: Trading signal to handle.
             current_position: Current position if any.
             market_data: Current market data.
+            pair_settings: Per-pair settings (optional, uses global if not provided).
         """
         if signal.signal_type == SignalType.BUY:
             if current_position:
                 logger.info("Already in position, ignoring buy signal")
                 self.state_machine.analysis_complete(has_signal=False)
                 return
-            self._enter_position(signal, market_data)
+            self._enter_position(signal, market_data, pair_settings)
 
         elif signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG):
             if not current_position:
@@ -415,33 +474,50 @@ class Trader:
         else:
             self.state_machine.analysis_complete(has_signal=False)
 
-    def _enter_position(self, signal, market_data: MarketData) -> None:
+    def _enter_position(
+        self,
+        signal,
+        market_data: MarketData,
+        pair_settings: Optional[PairSettings] = None
+    ) -> None:
         """
         Enter a new position.
 
         Args:
             signal: Entry signal.
             market_data: Current market data.
+            pair_settings: Per-pair settings (optional, uses global if not provided).
         """
         pair = signal.pair
         price = signal.price
 
-        # ML signal filtering
+        # Get per-pair ML confidence threshold (or use global)
+        ml_confidence_threshold = (
+            pair_settings.ml.confidence_threshold
+            if pair_settings else self.settings.ml.confidence_threshold
+        )
+
+        # ML signal filtering with per-pair confidence threshold
         if self.settings.ml.enabled and self.ml_predictor.is_ready:
             should_trade, ml_confidence, ml_reason = self.ml_predictor.should_take_signal(
                 signal_type="buy",
-                market_data=market_data
+                market_data=market_data,
+                confidence_threshold_override=ml_confidence_threshold
             )
             if not should_trade:
-                logger.info(f"ML rejected signal for {pair}: {ml_reason}")
+                logger.info(f"ML rejected signal for {pair}: {ml_reason} (threshold: {ml_confidence_threshold})")
                 self.state_machine.analysis_complete(has_signal=False)
                 return
-            logger.info(f"ML approved signal for {pair}: {ml_reason}")
+            logger.info(f"ML approved signal for {pair}: {ml_reason} (confidence: {ml_confidence:.2f})")
 
-        # Calculate position size
+        # Get available USD balance to avoid insufficient capital errors
+        available_usd = self._get_available_usd_balance()
+
+        # Calculate position size (pass available balance to cap position size)
         size_check = self.risk_manager.check_position_size(
             self.settings.risk.max_position_size_usd,
-            pair
+            pair,
+            available_balance=available_usd
         )
 
         if not size_check.allowed:
@@ -524,7 +600,13 @@ class Trader:
             self.state_machine.set_error(str(e))
             self.notifier.notify_error("Entry Order Failed", str(e), pair)
 
-    def _add_to_position(self, pair: str, market_data: MarketData, reason: str) -> None:
+    def _add_to_position(
+        self,
+        pair: str,
+        market_data: MarketData,
+        reason: str,
+        pair_settings: Optional[PairSettings] = None
+    ) -> None:
         """
         Add to existing position (Martingale).
 
@@ -532,6 +614,7 @@ class Trader:
             pair: Trading pair.
             market_data: Current market data.
             reason: Reason for adding.
+            pair_settings: Per-pair settings (optional, uses global if not provided).
         """
         position = self.state_machine.get_position(pair)
         if not position:
@@ -540,16 +623,34 @@ class Trader:
 
         current_price = market_data.ticker.last if market_data.ticker else 0
 
-        # Calculate add-on size based on last entry
-        last_entry_size_usd = position.last_entry_size_usd
-        add_on_size_usd = self.risk_manager.calculate_martingale_size(last_entry_size_usd)
+        # Get per-pair Martingale settings
+        if pair_settings:
+            martingale_config = pair_settings.risk.martingale
+            size_multiplier = martingale_config.size_multiplier
+            max_entries = martingale_config.max_entries
+        else:
+            size_multiplier = self.settings.risk.martingale.size_multiplier
+            max_entries = self.settings.risk.martingale.max_entries
 
-        # Check if add-on is allowed
+        # Check max entries (per-pair)
+        if position.num_entries >= max_entries:
+            logger.info(f"Martingale max entries reached for {pair}: {position.num_entries}/{max_entries}")
+            return
+
+        # Calculate add-on size based on last entry with per-pair multiplier
+        last_entry_size_usd = position.last_entry_size_usd
+        add_on_size_usd = last_entry_size_usd * size_multiplier
+
+        # Get available USD balance to avoid insufficient capital errors
+        available_usd = self._get_available_usd_balance()
+
+        # Check if add-on is allowed (pass available balance to cap add-on size)
         add_check = self.risk_manager.can_add_to_position(
             additional_size_usd=add_on_size_usd,
             current_position_exposure=position.total_cost_usd,
             num_entries=position.num_entries,
-            pair=pair
+            pair=pair,
+            available_balance=available_usd
         )
 
         if not add_check.allowed:
@@ -826,6 +927,23 @@ class Trader:
 
         except Exception as e:
             logger.warning(f"Failed to update capital: {e}")
+
+    def _get_available_usd_balance(self) -> float:
+        """
+        Get available USD balance for trading.
+
+        Returns:
+            Available USD balance, or 0 if unable to fetch.
+        """
+        try:
+            balances = self.client.get_balances()
+            usd_balance = balances.get("USD")
+            if usd_balance:
+                return usd_balance.available
+            return 0.0
+        except Exception as e:
+            logger.warning(f"Failed to get available USD balance: {e}")
+            return 0.0
 
     def _save_state(self) -> None:
         """Save current state to persistence."""
