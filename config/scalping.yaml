@@ -1,0 +1,68 @@
+# Scalping Strategy Configuration
+# Optimized for sideways markets with mean-reversion signals
+#
+# Backtested Results (30 days, Jan 2026):
+#   SOL/USD: 58.3% win rate, +4.25% P&L, PF 1.21
+#
+# Strategy: Multi-indicator confirmation with VWAP, Bollinger Bands, RSI, Volume
+# Entry: Buy when 2+ signals confirm oversold conditions
+# Exit: Take profit at 4.5%, stop loss at 2%, or indicator reversal
+
+strategy:
+  name: "scalping"
+
+  # Risk parameters (optimized for fee coverage)
+  take_profit_percent: 4.5    # Net ~3.98% after 0.52% round-trip fees
+  stop_loss_percent: 2.0      # 2:1 reward/risk before fees
+
+  # Candle interval (hourly works best for mean-reversion)
+  candle_interval: 60
+
+  # Minimum confirmations for entry
+  # Possible signals: RSI oversold, lower BB, below VWAP, volume spike
+  min_confirmations: 2
+
+# Indicator settings
+indicators:
+  rsi:
+    period: 7               # Short-term RSI for scalping
+    oversold: 30.0
+    overbought: 70.0
+
+  bollinger:
+    period: 20
+    std_dev: 2.0
+    squeeze_threshold: 3.0
+
+  vwap:
+    threshold_percent: 0.3  # Signal when price is 0.3% from VWAP
+
+  volume:
+    spike_threshold: 1.5    # 1.5x average volume
+
+# Trading pairs - only profitable pairs from backtest
+pairs:
+  - SOL/USD
+  # Note: Other pairs underperformed in current market conditions
+  # Re-run backtest periodically to find new profitable pairs
+
+# Adaptive pair management
+adaptive:
+  enabled: true
+  min_win_rate: 0.35        # Disable pair if win rate < 35%
+  min_profit_factor: 0.7    # Disable pair if PF < 0.7
+  max_consecutive_losses: 5  # Disable after 5 consecutive losses
+  cooldown_hours: 2.0       # Cooldown before re-enabling
+  reenable_win_rate: 0.45   # Re-enable if simulated WR > 45%
+
+# Position sizing
+position:
+  size_percent: 20.0        # Use 20% of capital per trade
+  confidence_scaling: true  # Scale size by pair confidence
+  min_scale: 0.5           # Minimum 50% of normal size
+  max_scale: 1.5           # Maximum 150% of normal size
+
+# Fees
+fees:
+  maker_percent: 0.16       # Kraken maker fee
+  taker_percent: 0.26       # Kraken taker fee (used for scalping)
