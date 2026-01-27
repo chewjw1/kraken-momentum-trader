@@ -81,7 +81,9 @@ class ScalpingTrader:
         # Trading state
         self.pairs = self.config.get('pairs', ['SOL/USD'])
         self.positions: Dict[str, dict] = {}
-        self.capital = self.config.get('position', {}).get('initial_capital', 10000.0)
+        # Use real Kraken balance if available, otherwise use config default
+        self.capital = getattr(self.client, 'paper_balance', None) or self.config.get('position', {}).get('initial_capital', 10000.0)
+        self.initial_capital = self.capital  # Track starting capital
         self.position_size_pct = self.config.get('position', {}).get('size_percent', 20.0)
 
         # Metrics
@@ -180,16 +182,32 @@ class ScalpingTrader:
         # Check if we have a position
         if pair in self.positions:
             position_data = self.positions[pair]
+            entry_price = position_data['entry_price']
+            pnl_pct = ((current_price - entry_price) / entry_price) * 100
+
+            # Debug logging for position monitoring
+            self.logger.info(
+                f"Checking {pair}",
+                entry_price=f"${entry_price:.2f}",
+                current_price=f"${current_price:.2f}",
+                pnl_pct=f"{pnl_pct:.2f}%",
+                tp_target=f"{self.strategy.config.take_profit_percent}%",
+                sl_target=f"-{self.strategy.config.stop_loss_percent}%"
+            )
+
             position = Position(
                 pair=pair,
                 side="long",
-                entry_price=position_data['entry_price'],
+                entry_price=entry_price,
                 current_price=current_price,
                 size=position_data['size'],
                 entry_time=datetime.fromisoformat(position_data['entry_time'])
             )
 
             signal = self.strategy.analyze(market_data, position)
+
+            # Log what signal we got
+            self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
 
             if signal.signal_type.value in ("sell", "close_long"):
                 # Exit position
@@ -233,9 +251,23 @@ class ScalpingTrader:
             signal = self.strategy.analyze(market_data, None)
 
             if signal.signal_type.value == "buy":
+                # Calculate available capital (not already deployed)
+                deployed_capital = sum(p['size_usd'] for p in self.positions.values())
+                available_capital = self.capital - deployed_capital
+
                 # Get position scale from adaptive manager
                 scale = self.pair_manager.get_position_scale(pair)
-                size_usd = self.capital * (self.position_size_pct / 100) * scale
+                size_usd = self.initial_capital * (self.position_size_pct / 100) * scale
+
+                # Check if we have enough available capital
+                if size_usd > available_capital:
+                    self.logger.warning(
+                        f"Skipping {pair} entry - insufficient capital",
+                        required=f"${size_usd:.2f}",
+                        available=f"${available_capital:.2f}"
+                    )
+                    return
+
                 size = size_usd / current_price
 
                 self.positions[pair] = {
@@ -251,7 +283,8 @@ class ScalpingTrader:
                     reason=signal.reason,
                     price=f"${current_price:.2f}",
                     size_usd=f"${size_usd:.2f}",
-                    scale=f"{scale:.2f}x"
+                    scale=f"{scale:.2f}x",
+                    available_after=f"${available_capital - size_usd:.2f}"
                 )
 
                 self._save_state()
