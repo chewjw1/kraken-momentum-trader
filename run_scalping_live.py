@@ -177,7 +177,11 @@ class ScalpingTrader:
         if not market_data:
             return
 
-        current_price = market_data.prices[-1]
+        # Use real-time ticker price, not stale candle close!
+        if market_data.ticker:
+            current_price = market_data.ticker.last
+        else:
+            current_price = market_data.prices[-1]  # Fallback to candle close
 
         # Check if we have a position
         if pair in self.positions:
