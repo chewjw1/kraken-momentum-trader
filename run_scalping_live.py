@@ -61,13 +61,37 @@ class ScalpingTrader:
         # Initialize components
         self.client = KrakenClient(paper_trading=paper_trading)
 
-        scalping_config = ScalpingConfig(
-            take_profit_percent=self.config.get('strategy', {}).get('take_profit_percent', 4.5),
-            stop_loss_percent=self.config.get('strategy', {}).get('stop_loss_percent', 2.0),
-            min_confirmations=self.config.get('strategy', {}).get('min_confirmations', 2),
-            fee_percent=self.config.get('fees', {}).get('taker_percent', 0.26)
+        # Fee rate depends on order type (maker = 0.16%, taker = 0.26%)
+        use_maker = self.config.get('execution', {}).get('use_maker_orders', True)
+        fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if use_maker else self.config.get('fees', {}).get('taker_percent', 0.26)
+
+        # Default strategy config (used if per-pair not specified)
+        default_config = ScalpingConfig(
+            take_profit_percent=self.config.get('strategy', {}).get('take_profit_percent', 5.0),
+            stop_loss_percent=self.config.get('strategy', {}).get('stop_loss_percent', 2.5),
+            min_confirmations=self.config.get('strategy', {}).get('min_confirmations', 3),
+            fee_percent=fee_rate
         )
-        self.strategy = ScalpingStrategy(scalping_config)
+        self.strategy = ScalpingStrategy(default_config)
+
+        # Per-pair strategies (if configured)
+        self.pair_strategies: Dict[str, ScalpingStrategy] = {}
+        pair_params = self.config.get('pair_parameters', {})
+        for pair, params in pair_params.items():
+            pair_config = ScalpingConfig(
+                take_profit_percent=params.get('take_profit_percent', default_config.take_profit_percent),
+                stop_loss_percent=params.get('stop_loss_percent', default_config.stop_loss_percent),
+                rsi_period=params.get('rsi_period', default_config.rsi_period),
+                rsi_oversold=params.get('rsi_oversold', default_config.rsi_oversold),
+                rsi_overbought=params.get('rsi_overbought', default_config.rsi_overbought),
+                bb_period=params.get('bb_period', default_config.bb_period),
+                bb_std_dev=params.get('bb_std_dev', default_config.bb_std_dev),
+                vwap_threshold_percent=params.get('vwap_threshold_percent', default_config.vwap_threshold_percent),
+                volume_spike_threshold=params.get('volume_spike_threshold', default_config.volume_spike_threshold),
+                min_confirmations=params.get('min_confirmations', default_config.min_confirmations),
+                fee_percent=fee_rate
+            )
+            self.pair_strategies[pair] = ScalpingStrategy(pair_config)
 
         adaptive_config = AdaptiveConfig(
             min_win_rate=self.config.get('adaptive', {}).get('min_win_rate', 0.35),
@@ -85,6 +109,12 @@ class ScalpingTrader:
         self.capital = getattr(self.client, 'paper_balance', None) or self.config.get('position', {}).get('initial_capital', 10000.0)
         self.initial_capital = self.capital  # Track starting capital
         self.position_size_pct = self.config.get('position', {}).get('size_percent', 20.0)
+
+        # Order execution settings
+        self.use_maker_orders = self.config.get('execution', {}).get('use_maker_orders', True)
+        self.maker_price_offset = self.config.get('execution', {}).get('maker_price_offset', 0.0)
+        # Fee rate depends on order type
+        self.fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if self.use_maker_orders else self.config.get('fees', {}).get('taker_percent', 0.26)
 
         # Metrics
         self.metrics = {
@@ -109,8 +139,12 @@ class ScalpingTrader:
             "Scalping trader initialized",
             pairs=self.pairs,
             paper_trading=paper_trading,
-            take_profit=scalping_config.take_profit_percent,
-            stop_loss=scalping_config.stop_loss_percent
+            take_profit=default_config.take_profit_percent,
+            stop_loss=default_config.stop_loss_percent,
+            use_maker_orders=self.use_maker_orders,
+            fee_rate=f"{self.fee_rate}%",
+            round_trip_fee=f"{self.fee_rate * 2}%",
+            per_pair_configs=len(self.pair_strategies)
         )
 
     def _load_config(self) -> dict:
@@ -167,6 +201,10 @@ class ScalpingTrader:
             self.logger.error(f"Error fetching data for {pair}: {e}")
             return None
 
+    def _get_strategy_for_pair(self, pair: str) -> ScalpingStrategy:
+        """Get the strategy for a specific pair (per-pair or default)."""
+        return self.pair_strategies.get(pair, self.strategy)
+
     def _process_pair(self, pair: str) -> None:
         """Process a single trading pair."""
         # Check if pair is enabled
@@ -183,6 +221,9 @@ class ScalpingTrader:
         else:
             current_price = market_data.prices[-1]  # Fallback to candle close
 
+        # Get strategy for this pair (may have per-pair optimized params)
+        strategy = self._get_strategy_for_pair(pair)
+
         # Check if we have a position
         if pair in self.positions:
             position_data = self.positions[pair]
@@ -195,8 +236,8 @@ class ScalpingTrader:
                 entry_price=f"${entry_price:.2f}",
                 current_price=f"${current_price:.2f}",
                 pnl_pct=f"{pnl_pct:.2f}%",
-                tp_target=f"{self.strategy.config.take_profit_percent}%",
-                sl_target=f"-{self.strategy.config.stop_loss_percent}%"
+                tp_target=f"{strategy.config.take_profit_percent}%",
+                sl_target=f"-{strategy.config.stop_loss_percent}%"
             )
 
             position = Position(
@@ -208,7 +249,7 @@ class ScalpingTrader:
                 entry_time=datetime.fromisoformat(position_data['entry_time'])
             )
 
-            signal = self.strategy.analyze(market_data, position)
+            signal = strategy.analyze(market_data, position)
 
             # Log what signal we got
             self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
@@ -216,7 +257,7 @@ class ScalpingTrader:
             if signal.signal_type.value in ("sell", "close_long"):
                 # Exit position
                 pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-                fee_pct = self.strategy.config.fee_percent * 2
+                fee_pct = strategy.config.fee_percent * 2
                 net_pnl_pct = pnl_pct - fee_pct
                 pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
 
@@ -252,7 +293,7 @@ class ScalpingTrader:
 
         else:
             # Look for entry
-            signal = self.strategy.analyze(market_data, None)
+            signal = strategy.analyze(market_data, None)
 
             if signal.signal_type.value == "buy":
                 # Calculate available capital (not already deployed)
@@ -370,6 +411,7 @@ def main():
 ================================================================
   Mean-reversion scalping with adaptive pair management
   Pairs auto-disable after poor performance
+  Using MAKER orders for lower fees (0.16% vs 0.26%)
 ================================================================
     """)
 
