@@ -429,7 +429,8 @@ class KrakenClient:
         volume: float,
         price: Optional[float] = None,
         stop_price: Optional[float] = None,
-        validate_only: bool = False
+        validate_only: bool = False,
+        post_only: bool = False
     ) -> Order:
         """
         Place an order.
@@ -442,6 +443,8 @@ class KrakenClient:
             price: Limit price (for limit orders).
             stop_price: Stop price (for stop orders).
             validate_only: If True, validate but don't submit.
+            post_only: If True, order will only be placed if it would be a maker order.
+                       Rejected if it would take liquidity. Guarantees 0.16% maker fee.
 
         Returns:
             The placed Order.
@@ -453,11 +456,12 @@ class KrakenClient:
             price=price or 0.0,
             amount=volume,
             order_type=order_type.value,
-            paper_trading=self.paper_trading
+            paper_trading=self.paper_trading,
+            post_only=post_only
         )
 
         if self.paper_trading:
-            return self._place_paper_order(pair, side, order_type, volume, price)
+            return self._place_paper_order(pair, side, order_type, volume, price, post_only)
 
         kraken_pair = self._normalize_pair(pair)
 
@@ -477,6 +481,10 @@ class KrakenClient:
         if validate_only:
             data["validate"] = True
 
+        # Post-only flag ensures maker fee (0.16% instead of 0.26%)
+        if post_only and order_type == OrderType.LIMIT:
+            data["oflags"] = "post"
+
         result = self._request("POST", "private/AddOrder", data, private=True)
 
         order_id = result["txid"][0]
@@ -491,6 +499,46 @@ class KrakenClient:
             filled_volume=0.0,
             status="open",
             created_at=datetime.now(timezone.utc)
+        )
+
+    def place_maker_order(
+        self,
+        pair: str,
+        side: OrderSide,
+        volume: float,
+        price_offset_percent: float = 0.0
+    ) -> Order:
+        """
+        Place a maker (limit) order to get lower fees (0.16% vs 0.26%).
+
+        For BUY: places limit at current bid (or slightly below)
+        For SELL: places limit at current ask (or slightly above)
+
+        Args:
+            pair: Trading pair.
+            side: Buy or sell.
+            volume: Order volume.
+            price_offset_percent: Offset from bid/ask (0.0 = at bid/ask, 0.1 = 0.1% better)
+
+        Returns:
+            The placed Order.
+        """
+        ticker = self.get_ticker(pair)
+
+        if side == OrderSide.BUY:
+            # Place at bid or slightly below for better fill priority
+            price = ticker.bid * (1 - price_offset_percent / 100)
+        else:
+            # Place at ask or slightly above for better fill priority
+            price = ticker.ask * (1 + price_offset_percent / 100)
+
+        return self.place_order(
+            pair=pair,
+            side=side,
+            order_type=OrderType.LIMIT,
+            volume=volume,
+            price=round(price, 2),  # Round to cents for USD pairs
+            post_only=True
         )
 
     def cancel_order(self, order_id: str) -> bool:
@@ -587,7 +635,8 @@ class KrakenClient:
         side: OrderSide,
         order_type: OrderType,
         volume: float,
-        price: Optional[float]
+        price: Optional[float],
+        post_only: bool = False
     ) -> Order:
         """Simulate order placement in paper trading mode."""
         # Get current price if not specified
@@ -597,7 +646,9 @@ class KrakenClient:
 
         # Calculate cost
         cost = volume * price
-        fee = cost * 0.0026  # Assume 0.26% fee
+        # Use maker fee (0.16%) for limit/post-only orders, taker fee (0.26%) for market
+        fee_rate = 0.0016 if (order_type == OrderType.LIMIT or post_only) else 0.0026
+        fee = cost * fee_rate
 
         # Check balance
         base, quote = pair.split("/")

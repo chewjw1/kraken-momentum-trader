@@ -1,0 +1,119 @@
+# Scalping Strategy Configuration
+# Optimized with MAKER ORDERS for 0.32% round-trip fees (vs 0.52% taker)
+#
+# Optimization Results (118 days, Oct 2025 - Jan 2026):
+#   BTC/USD: 58.8% win rate, +2.90% return, PF 1.54
+#   SOL/USD: 60.0% win rate, +1.29% return, PF 1.08
+#   XRP/USD: 50.0% win rate, +3.00% return, PF 1.29
+#   ETH/USD: 41.7% win rate, -2.59% return (EXCLUDED)
+#
+# Strategy: Multi-indicator confirmation with VWAP, Bollinger Bands, RSI, Volume
+# Entry: Buy when 3+ signals confirm oversold conditions (higher quality)
+# Exit: Take profit at 5%, stop loss at 2-3%, or indicator reversal
+
+strategy:
+  name: "scalping"
+
+  # Default parameters (used when per-pair not specified)
+  take_profit_percent: 5.0   # Wider target for maker order fills
+  stop_loss_percent: 2.5     # 2:1 risk-reward
+  candle_interval: 60
+  min_confirmations: 3       # Higher quality trades
+
+# Indicator settings (defaults)
+indicators:
+  rsi:
+    period: 13
+    oversold: 25.0
+    overbought: 70.0
+
+  bollinger:
+    period: 20
+    std_dev: 2.0
+    squeeze_threshold: 3.0
+
+  vwap:
+    threshold_percent: 0.7
+
+  volume:
+    spike_threshold: 1.75
+
+# Trading pairs - ALL pairs enabled, adaptive manager will disable losers
+pairs:
+  - BTC/USD    # Optimized: +2.90% return, 58.8% win rate
+  - ETH/USD    # May underperform - adaptive manager will disable if needed
+  - SOL/USD    # Optimized: +1.29% return, 60.0% win rate
+  - XRP/USD    # Optimized: +3.00% return, 50.0% win rate
+  - DOGE/USD   # Adaptive manager will evaluate
+  - ADA/USD    # Adaptive manager will evaluate
+  - LINK/USD   # Adaptive manager will evaluate
+  - AVAX/USD   # Adaptive manager will evaluate
+
+# Per-pair optimized parameters (from run_scalping_optimizer.py)
+pair_parameters:
+  BTC/USD:
+    take_profit_percent: 5.0
+    stop_loss_percent: 3.0
+    rsi_period: 13
+    rsi_oversold: 25
+    rsi_overbought: 65
+    bb_period: 10
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.8
+    volume_spike_threshold: 1.75
+    min_confirmations: 3
+
+  SOL/USD:
+    take_profit_percent: 4.0
+    stop_loss_percent: 3.5
+    rsi_period: 6
+    rsi_oversold: 25
+    rsi_overbought: 80
+    bb_period: 15
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.7
+    volume_spike_threshold: 1.25
+    min_confirmations: 4
+
+  XRP/USD:
+    take_profit_percent: 5.0
+    stop_loss_percent: 2.0
+    rsi_period: 13
+    rsi_oversold: 20
+    rsi_overbought: 70
+    bb_period: 25
+    bb_std_dev: 2.25
+    vwap_threshold_percent: 0.7
+    volume_spike_threshold: 2.5
+    min_confirmations: 3
+
+# Adaptive pair management
+adaptive:
+  enabled: true
+  min_win_rate: 0.40          # Disable pair if win rate < 40%
+  min_profit_factor: 0.9      # Disable pair if PF < 0.9
+  max_consecutive_losses: 4   # Disable after 4 consecutive losses
+  cooldown_hours: 2.0
+  reenable_win_rate: 0.50     # Re-enable if simulated WR > 50%
+
+# Position sizing
+position:
+  size_percent: 20.0
+  confidence_scaling: true
+  min_scale: 0.5
+  max_scale: 1.5
+
+# Fees - USING MAKER ORDERS
+fees:
+  maker_percent: 0.16         # Kraken maker fee (limit orders)
+  taker_percent: 0.26         # Kraken taker fee (market orders)
+
+# Order execution - MAKER ORDERS for lower fees
+execution:
+  use_maker_orders: true      # Use limit orders for 0.16% vs 0.26%
+  maker_price_offset: 0.0     # Place at bid/ask for fast fills
+  order_timeout_seconds: 60   # Cancel unfilled orders after 60s
+
+# Trading loop settings
+trading:
+  check_interval_seconds: 60
