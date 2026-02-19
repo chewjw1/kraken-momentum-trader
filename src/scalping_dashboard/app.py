@@ -116,7 +116,7 @@ def load_state(data_dir: Path) -> dict:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Scalping Dashboard")
-    parser.add_argument("--port", type=int, default=44490, help="Port to run on")
+    parser.add_argument("--port", type=int, default=44485, help="Port to run on")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--data-dir", default="data/scalping", help="Data directory")
     args = parser.parse_args()

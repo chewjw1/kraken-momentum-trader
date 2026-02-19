@@ -610,7 +610,7 @@ def main():
     parser.add_argument("--config", default="config/scalping.yaml", help="Config file path")
     parser.add_argument("--data-dir", default="data/scalping", help="Data directory")
     parser.add_argument("--live", action="store_true", help="Enable live trading (default: paper)")
-    parser.add_argument("--dashboard-port", type=int, default=44490, help="Dashboard port")
+    parser.add_argument("--dashboard-port", type=int, default=44485, help="Dashboard port")
 
     args = parser.parse_args()
 
