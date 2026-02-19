@@ -130,10 +130,12 @@ class CircuitBreaker:
         if ps and ps.is_paused:
             now = datetime.now(timezone.utc)
             if ps.paused_until and now >= ps.paused_until:
-                # Cooldown expired -- un-pause
+                # Cooldown expired -- un-pause and reset peak so the
+                # pair doesn't immediately re-trigger on the next loss.
                 ps.is_paused = False
                 ps.paused_until = None
                 ps.pause_reason = None
+                ps.peak_pnl = ps.current_pnl
                 logger.info(f"Pair {pair} un-paused (cooldown expired)")
                 return True
             return False
@@ -335,13 +337,22 @@ class CircuitBreaker:
             if datetime.now(timezone.utc) >= self._cooldown_until:
                 logger.info(
                     "Cooldown expired, resetting circuit breaker",
-                    cooldown_ended=self._cooldown_until.isoformat()
+                    cooldown_ended=self._cooldown_until.isoformat(),
+                    previous_peak=f"${self._peak_equity:.2f}",
+                    current_equity=f"${self._current_equity:.2f}",
                 )
                 self._state = CircuitState.CLOSED
                 self._consecutive_losses = 0
                 self._cooldown_until = None
                 self._trigger_reason = None
                 self._last_state_change = datetime.now(timezone.utc)
+
+                # Reset peak to current equity so drawdown tracking
+                # starts fresh.  Without this, the old peak stays and
+                # the drawdown threshold is immediately breached again
+                # on the next losing trade -- creating an infinite loop
+                # of cooldown -> expire -> re-trigger -> cooldown.
+                self._peak_equity = self._current_equity
 
     # ── Serialization ─────────────────────────────────────────────
 

@@ -814,6 +814,28 @@ class TestCircuitBreakerDrawdown:
         cb.update_equity(9400.0)  # 6% drawdown from peak
         assert not cb.is_trading_allowed()
 
+    def test_cooldown_resets_peak_equity(self):
+        """After cooldown, peak should reset so drawdown doesn't immediately re-trigger."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=5.0,
+            initial_capital=10000.0,
+            cooldown_hours=1,
+            consecutive_loss_limit=100,
+        )
+
+        # Lose 6% -- triggers cooldown
+        cb.record_trade("BTC/USD", -600.0)
+        assert not cb.is_trading_allowed()
+
+        # Manually expire the cooldown
+        cb._cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        assert cb.is_trading_allowed()  # Cooldown expired, should re-enable
+
+        # A small loss should NOT re-trigger (peak was reset to current equity)
+        cb.record_trade("BTC/USD", -10.0)
+        assert cb.is_trading_allowed()  # Only $10 loss from new peak of $9400
+
 
 class TestBacktestSlippage:
     """Tests for slippage simulation in backtester."""
