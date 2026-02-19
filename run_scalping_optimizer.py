@@ -35,6 +35,7 @@ except ImportError:
     OPTUNA_AVAILABLE = False
 
 from src.backtest.ccxt_data_provider import CCXTDataProvider
+from src.backtest.data import HistoricalDataManager
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
 from src.strategy.base_strategy import MarketData, Position, SignalType
@@ -289,7 +290,6 @@ class ScalpingOptimizer:
 
         self.config = config
         self._historical_data: Dict[str, List[OHLC]] = {}
-        self._ccxt_provider: Optional[CCXTDataProvider] = None
         self.study: Optional[optuna.Study] = None
         self._best_params: Optional[Dict[str, Any]] = None
         self._best_score: Optional[float] = None
@@ -299,15 +299,52 @@ class ScalpingOptimizer:
         Path(config.storage_path).parent.mkdir(parents=True, exist_ok=True)
         Path(config.cache_dir).mkdir(parents=True, exist_ok=True)
 
-    @property
-    def ccxt_provider(self) -> CCXTDataProvider:
-        """Lazy-load data provider."""
-        if self._ccxt_provider is None:
-            self._ccxt_provider = CCXTDataProvider(
-                cache_dir=self.config.cache_dir,
-                use_cache=True
-            )
-        return self._ccxt_provider
+    def _fetch_pair_data(
+        self, pair: str, show_progress: bool = True
+    ) -> List[OHLC]:
+        """Fetch data for a pair, trying CCXT cache then Kraken API."""
+        def progress_cb(current: int, total: int) -> None:
+            if show_progress and total > 0:
+                pct = (current / total * 100)
+                print(f"\r    Progress: {current}/{total} ({pct:.0f}%)...", end="", flush=True)
+
+        # Check CCXT cache first (no network call)
+        cache_dir = Path(self.config.cache_dir)
+        if cache_dir.exists():
+            for cache_file in cache_dir.glob("*.json"):
+                pair_clean = pair.replace("/", "_")
+                if pair_clean in cache_file.name:
+                    try:
+                        provider = CCXTDataProvider(
+                            cache_dir=self.config.cache_dir, use_cache=True
+                        )
+                        # Only check cache -- don't fetch from network
+                        candles = provider._load_from_cache(
+                            pair, self.config.start_date, self.config.end_date,
+                            self.config.interval
+                        )
+                        if candles and len(candles) > 100:
+                            print(f"    Loaded {len(candles)} candles from CCXT cache")
+                            return candles
+                    except Exception:
+                        pass
+
+        # Use Kraken API with pagination
+        print(f"    Using Kraken API (paginated)...")
+        kraken_dm = HistoricalDataManager(
+            cache_dir=self.config.cache_dir,
+            use_cache=True,
+        )
+        candles = kraken_dm.get_ohlc_range(
+            pair=pair,
+            start=self.config.start_date,
+            end=self.config.end_date,
+            interval=self.config.interval,
+            progress_callback=progress_cb if show_progress else None,
+        )
+        if show_progress:
+            print()
+        return candles
 
     def prefetch_data(self, show_progress: bool = True) -> None:
         """Pre-fetch historical data for all pairs."""
@@ -318,21 +355,7 @@ class ScalpingOptimizer:
         for pair in self.config.pairs:
             print(f"\n  Fetching {pair}...")
 
-            def progress_cb(current: int, total: int) -> None:
-                if show_progress:
-                    pct = (current / total * 100) if total > 0 else 0
-                    print(f"\r    Progress: {current}/{total} ({pct:.0f}%)...", end="", flush=True)
-
-            candles = self.ccxt_provider.get_ohlc_range(
-                pair=pair,
-                start=self.config.start_date,
-                end=self.config.end_date,
-                interval=self.config.interval,
-                progress_callback=progress_cb if show_progress else None
-            )
-
-            if show_progress:
-                print()  # Newline
+            candles = self._fetch_pair_data(pair, show_progress)
 
             if not candles:
                 raise ValueError(f"Failed to fetch data for {pair}")
@@ -573,7 +596,6 @@ class RegimeAwareOptimizer:
 
         self.config = config
         self._historical_data: Dict[str, List[OHLC]] = {}
-        self._ccxt_provider: Optional[CCXTDataProvider] = None
         self._regime_detector = RegimeDetector(RegimeConfig(
             fast_sma_period=50,
             slow_sma_period=200,
@@ -581,43 +603,13 @@ class RegimeAwareOptimizer:
         ))
         self._results: Dict[str, Dict[str, Any]] = {}  # pair -> regime -> results
 
-    @property
-    def ccxt_provider(self) -> CCXTDataProvider:
-        if self._ccxt_provider is None:
-            self._ccxt_provider = CCXTDataProvider(
-                cache_dir=self.config.cache_dir, use_cache=True
-            )
-        return self._ccxt_provider
+        # Re-use the same data fetch logic as ScalpingOptimizer
+        self._data_fetcher = ScalpingOptimizer(config)
 
     def prefetch_data(self, show_progress: bool = True) -> None:
         """Pre-fetch historical data for all pairs."""
-        days = (self.config.end_date - self.config.start_date).days
-        print(f"\nFetching {days} days of historical data...")
-        print(f"  Period: {self.config.start_date.date()} to {self.config.end_date.date()}")
-
-        for pair in self.config.pairs:
-            print(f"\n  Fetching {pair}...")
-
-            def progress_cb(current: int, total: int) -> None:
-                if show_progress and total > 0:
-                    pct = current / total * 100
-                    print(f"\r    Progress: {current}/{total} ({pct:.0f}%)...", end="", flush=True)
-
-            candles = self.ccxt_provider.get_ohlc_range(
-                pair=pair,
-                start=self.config.start_date,
-                end=self.config.end_date,
-                interval=self.config.interval,
-                progress_callback=progress_cb if show_progress else None
-            )
-            if show_progress:
-                print()
-
-            if not candles:
-                raise ValueError(f"Failed to fetch data for {pair}")
-
-            self._historical_data[pair] = candles
-            print(f"    Loaded {len(candles)} candles for {pair}")
+        self._data_fetcher.prefetch_data(show_progress)
+        self._historical_data = self._data_fetcher._historical_data
 
     def segment_by_regime(self, pair: str) -> Dict[MarketRegime, List[List[OHLC]]]:
         """
