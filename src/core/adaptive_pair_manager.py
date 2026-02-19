@@ -221,7 +221,6 @@ class AdaptivePairManager:
     def _evaluate_pair_status(self, pair: str) -> None:
         """Evaluate if a pair should be disabled or re-enabled."""
         perf = self._pairs[pair]
-        now = datetime.now(timezone.utc)
 
         # Not enough data yet
         if len(perf.trades) < self.config.min_trades_for_decision:
@@ -243,14 +242,42 @@ class AdaptivePairManager:
             if disable_reason:
                 self._disable_pair(pair, disable_reason)
 
-        else:
-            # Check re-enable conditions
-            if perf.cooldown_until and now < perf.cooldown_until:
-                return  # Still in cooldown
+    def check_reenable_pairs(self) -> List[str]:
+        """
+        Check all disabled pairs for re-enable eligibility.
 
-            # Check if performance has improved
-            if perf.win_rate >= self.config.reenable_win_rate:
-                self._enable_pair(pair)
+        Called from the trading loop so disabled pairs aren't stuck forever.
+        Re-enables pairs whose cooldown has expired. The pair gets a fresh
+        chance -- if it underperforms again it will be re-disabled after
+        min_trades_for_decision new trades.
+
+        Returns:
+            List of pair names that were re-enabled.
+        """
+        now = datetime.now(timezone.utc)
+        reenabled = []
+
+        for pair, perf in self._pairs.items():
+            if perf.is_enabled:
+                continue
+
+            # Still in cooldown
+            if perf.cooldown_until and now < perf.cooldown_until:
+                continue
+
+            # Cooldown expired -- re-enable and give it another chance.
+            # The rolling deque of trades is kept so the pair will be
+            # quickly re-disabled if it continues to underperform.
+            self._enable_pair(pair)
+            reenabled.append(pair)
+
+            logger.info(
+                f"PAIR RE-ENABLED (cooldown expired): {pair}",
+                win_rate=perf.win_rate,
+                recent_pnl=perf.recent_pnl
+            )
+
+        return reenabled
 
     def _disable_pair(self, pair: str, reason: str) -> None:
         """Disable a trading pair."""

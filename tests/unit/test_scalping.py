@@ -22,6 +22,7 @@ from src.strategy.signals.vwap import VWAPIndicator, calculate_vwap
 from src.strategy.signals.bollinger import BollingerBandsIndicator, calculate_bollinger
 from src.core.adaptive_pair_manager import AdaptivePairManager, AdaptiveConfig
 from src.risk.circuit_breaker import CircuitBreaker, CircuitState
+from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime
 
 
 @dataclass
@@ -679,66 +680,139 @@ class TestEMAFilter:
         assert "EMA bearish filter" not in signal.reason
 
 
-class TestCircuitBreakerIntegration:
-    """Tests for circuit breaker behavior with scalping."""
+class TestCircuitBreakerDrawdown:
+    """Tests for drawdown-based circuit breaker."""
 
-    def test_circuit_breaker_blocks_after_losses(self):
-        """Should block trading after consecutive losses."""
-        cb = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
+    def test_global_drawdown_triggers(self):
+        """Should halt all trading when global drawdown exceeds threshold."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=5.0,
+            initial_capital=10000.0,
+            consecutive_loss_limit=100,  # Effectively disabled
+        )
 
         assert cb.is_trading_allowed()
 
-        cb.record_loss()
-        cb.record_loss()
-        assert cb.is_trading_allowed()  # Still under limit
+        # Lose 5% of capital ($500) across trades
+        cb.record_trade("BTC/USD", -200.0)
+        cb.record_trade("ETH/USD", -200.0)
+        assert cb.is_trading_allowed()  # 4% drawdown, still OK
 
-        cb.record_loss()  # 3rd loss
-        assert not cb.is_trading_allowed()  # Now blocked
+        cb.record_trade("SOL/USD", -150.0)  # Now 5.5% drawdown
+        assert not cb.is_trading_allowed()
 
-    def test_circuit_breaker_resets_on_win(self):
-        """Should reset consecutive loss counter on a win."""
-        cb = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
+    def test_per_pair_drawdown_pauses_pair(self):
+        """Should pause individual pair when its drawdown exceeds threshold."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=10.0,
+            pair_max_drawdown_pct=3.0,
+            initial_capital=10000.0,
+            consecutive_loss_limit=100,
+        )
 
-        cb.record_loss()
-        cb.record_loss()
-        cb.record_win()  # Reset counter
+        # BTC loses $300 = 3% of capital
+        cb.record_trade("BTC/USD", -150.0)
+        cb.record_trade("BTC/USD", -150.0)
 
-        cb.record_loss()
-        cb.record_loss()
-        assert cb.is_trading_allowed()  # Only 2 losses since last win
+        assert not cb.is_pair_allowed("BTC/USD")  # BTC paused
+        assert cb.is_pair_allowed("ETH/USD")       # ETH still OK
+        assert cb.is_trading_allowed()              # Global still OK
 
-    def test_circuit_breaker_state_serialization(self):
-        """Should persist and restore state correctly."""
-        cb = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
-        cb.record_loss()
-        cb.record_loss()
+    def test_consecutive_loss_secondary(self):
+        """Consecutive losses still trigger as secondary signal."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=50.0,  # Very high, won't trigger
+            consecutive_loss_limit=3,
+            initial_capital=10000.0,
+        )
 
-        state = cb.to_dict()
-        assert state["consecutive_losses"] == 2
-        assert state["state"] == "closed"
+        cb.record_trade("BTC/USD", -10.0)
+        cb.record_trade("ETH/USD", -10.0)
+        cb.record_trade("SOL/USD", -10.0)  # 3 consecutive losses
+        assert not cb.is_trading_allowed()
 
-        # Restore into new instance
-        cb2 = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
-        cb2.from_dict(state)
-        assert cb2.get_state().consecutive_losses == 2
+    def test_win_resets_consecutive_losses(self):
+        """A win should reset the consecutive loss counter."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=50.0,
+            consecutive_loss_limit=3,
+            initial_capital=10000.0,
+        )
 
-    def test_circuit_breaker_emergency_stop(self):
+        cb.record_trade("BTC/USD", -10.0)
+        cb.record_trade("BTC/USD", -10.0)
+        cb.record_trade("BTC/USD", 50.0)   # Win resets counter
+        cb.record_trade("BTC/USD", -10.0)
+        cb.record_trade("BTC/USD", -10.0)
+        assert cb.is_trading_allowed()      # Only 2 since last win
+
+    def test_peak_equity_tracking(self):
+        """Peak equity should update on profits."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=5.0,
+            initial_capital=10000.0,
+            consecutive_loss_limit=100,
+        )
+
+        # Win $1000 -- peak is now $11000
+        cb.record_trade("BTC/USD", 1000.0)
+        assert cb.is_trading_allowed()
+
+        # Lose $500 from $11000 -- drawdown is $500/$10000 = 5.0%
+        cb.record_trade("BTC/USD", -500.0)
+        assert not cb.is_trading_allowed()
+
+    def test_emergency_stop(self):
         """Should enter emergency state and block trading."""
-        cb = CircuitBreaker()
+        cb = CircuitBreaker(initial_capital=10000.0)
         cb.trigger_emergency_stop("Market crash detected")
         assert not cb.is_trading_allowed()
         assert cb.get_state().state == CircuitState.EMERGENCY
 
-    def test_circuit_breaker_manual_reset(self):
+    def test_manual_reset(self):
         """Should allow manual reset from any state."""
-        cb = CircuitBreaker(consecutive_loss_limit=2, cooldown_hours=1)
-        cb.record_loss()
-        cb.record_loss()
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=5.0,
+            initial_capital=10000.0,
+            consecutive_loss_limit=100,
+        )
+        cb.record_trade("BTC/USD", -600.0)  # 6% drawdown
         assert not cb.is_trading_allowed()
 
         cb.reset()
         assert cb.is_trading_allowed()
-        assert cb.get_state().consecutive_losses == 0
+
+    def test_serialization_with_pair_states(self):
+        """Should serialize and restore per-pair states."""
+        cb = CircuitBreaker(initial_capital=10000.0, pair_max_drawdown_pct=5.0)
+
+        cb.record_trade("BTC/USD", 100.0)
+        cb.record_trade("BTC/USD", -50.0)
+        cb.record_trade("ETH/USD", -200.0)
+
+        state = cb.to_dict()
+        assert "pair_states" in state
+        assert "BTC/USD" in state["pair_states"]
+        assert "ETH/USD" in state["pair_states"]
+
+        # Restore
+        cb2 = CircuitBreaker(initial_capital=10000.0, pair_max_drawdown_pct=5.0)
+        cb2.from_dict(state)
+
+        btc_state = cb2.get_pair_state("BTC/USD")
+        assert btc_state is not None
+        assert btc_state.current_pnl == 50.0  # 100 - 50
+
+    def test_update_equity(self):
+        """Should trigger on equity update too."""
+        cb = CircuitBreaker(
+            global_max_drawdown_pct=5.0,
+            initial_capital=10000.0,
+            consecutive_loss_limit=100,
+        )
+
+        cb.update_equity(9400.0)  # 6% drawdown from peak
+        assert not cb.is_trading_allowed()
 
 
 class TestBacktestSlippage:
@@ -767,6 +841,146 @@ class TestBacktestSlippage:
         exit_price = 105.0 * (1 - config.slippage_percent / 100)
         assert exit_price < 105.0
         assert abs(exit_price - 104.895) < 0.01
+
+
+class TestRegimeDetector:
+    """Tests for market regime detection."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.config = RegimeConfig(
+            fast_sma_period=50,
+            slow_sma_period=200,
+            min_data_points=200,
+        )
+        self.detector = RegimeDetector(self.config)
+
+    def test_insufficient_data_returns_unknown(self):
+        """Should return UNKNOWN with insufficient data."""
+        prices = [100.0] * 50  # Not enough
+        result = self.detector.detect(prices)
+        assert result.regime == MarketRegime.UNKNOWN
+        assert result.confidence == 0.0
+
+    def test_bull_regime_detection(self):
+        """Should detect bull regime from rising prices."""
+        # 250 candles with clear uptrend
+        prices = [100.0 + i * 0.5 for i in range(250)]  # 100 -> 225
+        result = self.detector.detect(prices)
+        assert result.regime == MarketRegime.BULL
+        assert result.confidence > 0.4
+        assert result.sma_slope_pct > 0
+
+    def test_bear_regime_detection(self):
+        """Should detect bear regime from falling prices."""
+        # 250 candles with clear downtrend
+        prices = [200.0 - i * 0.4 for i in range(250)]  # 200 -> 100
+        result = self.detector.detect(prices)
+        assert result.regime == MarketRegime.BEAR
+        assert result.confidence > 0.4
+        assert result.sma_slope_pct < 0
+
+    def test_sideways_regime_detection(self):
+        """Should detect sideways regime from flat prices."""
+        import math
+        # Oscillate around 100 with small amplitude
+        prices = [100.0 + 2.0 * math.sin(i * 0.1) for i in range(250)]
+        result = self.detector.detect(prices)
+        assert result.regime == MarketRegime.SIDEWAYS
+
+    def test_get_adjustments(self):
+        """Should return correct adjustments for each regime."""
+        adj_bull = self.detector.get_adjustments(MarketRegime.BULL)
+        adj_bear = self.detector.get_adjustments(MarketRegime.BEAR)
+
+        # Bull: wider TP
+        assert adj_bull['take_profit_multiplier'] > 1.0
+        # Bear: smaller positions
+        assert adj_bear['position_scale_multiplier'] < 1.0
+        # Bear: extra confirmation required
+        assert adj_bear['min_confirmations_offset'] > 0
+
+    def test_is_trending(self):
+        """Should report trending for bull and bear."""
+        prices_up = [100.0 + i * 0.5 for i in range(250)]
+        result = self.detector.detect(prices_up)
+        assert result.is_trending
+
+    def test_serialization(self):
+        """Should serialize and restore state."""
+        prices = [100.0 + i * 0.3 for i in range(250)]
+        self.detector.detect(prices)
+
+        data = self.detector.to_dict()
+        assert data["regime"] in ["bull", "bear", "sideways", "unknown"]
+
+        new_detector = RegimeDetector(self.config)
+        new_detector.from_dict(data)
+        assert new_detector.last_result is not None
+        assert new_detector.last_result.regime.value == data["regime"]
+
+    def test_atr_calculation(self):
+        """Should compute ATR as percentage of price."""
+        # Create prices with known volatility
+        prices = [100.0 + i * 0.3 for i in range(250)]
+        highs = [p + 2.0 for p in prices]
+        lows = [p - 2.0 for p in prices]
+        result = self.detector.detect(prices, highs, lows)
+        assert result.atr_pct > 0
+
+
+class TestPairReEnable:
+    """Tests for the pair re-enable fix."""
+
+    def setup_method(self):
+        self.config = AdaptiveConfig(
+            min_win_rate=0.35,
+            max_consecutive_losses=5,
+            min_trades_for_decision=10,
+            cooldown_hours=2.0,
+        )
+        self.manager = AdaptivePairManager(self.config)
+
+    def test_check_reenable_after_cooldown(self):
+        """Disabled pairs should be re-enabled after cooldown expires."""
+        self.manager.register_pair("BTC/USD")
+        self.manager.force_disable("BTC/USD", "test")
+        assert not self.manager.is_pair_enabled("BTC/USD")
+
+        # Manually expire the cooldown
+        perf = self.manager._pairs["BTC/USD"]
+        perf.cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        reenabled = self.manager.check_reenable_pairs()
+        assert "BTC/USD" in reenabled
+        assert self.manager.is_pair_enabled("BTC/USD")
+
+    def test_check_reenable_respects_cooldown(self):
+        """Should NOT re-enable pairs still in cooldown."""
+        config = AdaptiveConfig(cooldown_hours=999.0)  # Very long cooldown
+        manager = AdaptivePairManager(config)
+        manager.register_pair("BTC/USD")
+        manager.force_disable("BTC/USD", "test")
+
+        reenabled = manager.check_reenable_pairs()
+        assert "BTC/USD" not in reenabled
+        assert not manager.is_pair_enabled("BTC/USD")
+
+    def test_check_reenable_only_disabled_pairs(self):
+        """Should only check disabled pairs, not enabled ones."""
+        self.manager.register_pair("BTC/USD")
+        self.manager.register_pair("ETH/USD")
+
+        # Only disable BTC
+        self.manager.force_disable("BTC/USD", "test")
+
+        # Expire BTC cooldown
+        perf = self.manager._pairs["BTC/USD"]
+        perf.cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        reenabled = self.manager.check_reenable_pairs()
+        assert "BTC/USD" in reenabled
+        assert "ETH/USD" not in reenabled  # Was never disabled
 
 
 if __name__ == "__main__":

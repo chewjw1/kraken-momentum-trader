@@ -28,6 +28,7 @@ import yaml
 from src.exchange.kraken_client import KrakenClient
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.base_strategy import MarketData, Position
+from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime
 from src.core.adaptive_pair_manager import AdaptivePairManager, AdaptiveConfig
 from src.risk.circuit_breaker import CircuitBreaker
 from src.observability.logger import configure_logging, get_logger
@@ -103,20 +104,38 @@ class ScalpingTrader:
         )
         self.pair_manager = AdaptivePairManager(adaptive_config)
 
-        # Circuit breaker - halts all trading after consecutive losses
-        cb_config = self.config.get('circuit_breaker', {})
-        self.circuit_breaker = CircuitBreaker(
-            consecutive_loss_limit=cb_config.get('consecutive_loss_limit', 3),
-            cooldown_hours=cb_config.get('cooldown_hours', 4)
-        )
-
-        # Trading state
+        # Trading state (set early so circuit breaker can reference initial_capital)
         self.pairs = self.config.get('pairs', ['SOL/USD'])
         self.positions: Dict[str, dict] = {}
-        # Use real Kraken balance if available, otherwise use config default
         self.capital = getattr(self.client, 'paper_balance', None) or self.config.get('position', {}).get('initial_capital', 10000.0)
-        self.initial_capital = self.capital  # Track starting capital
+        self.initial_capital = self.capital
         self.position_size_pct = self.config.get('position', {}).get('size_percent', 20.0)
+
+        # Circuit breaker - drawdown-based (per-pair + global)
+        cb_config = self.config.get('circuit_breaker', {})
+        self.circuit_breaker = CircuitBreaker(
+            global_max_drawdown_pct=cb_config.get('global_max_drawdown_pct', 5.0),
+            cooldown_hours=cb_config.get('cooldown_hours', 4),
+            pair_max_drawdown_pct=cb_config.get('pair_max_drawdown_pct', 3.0),
+            pair_cooldown_hours=cb_config.get('pair_cooldown_hours', 2.0),
+            consecutive_loss_limit=cb_config.get('consecutive_loss_limit', 5),
+            initial_capital=self.initial_capital,
+        )
+
+        # Regime detector - classifies bull/bear/sideways
+        regime_cfg = self.config.get('regime_detector', {})
+        self.regime_detector = RegimeDetector(RegimeConfig(
+            fast_sma_period=regime_cfg.get('fast_sma_period', 50),
+            slow_sma_period=regime_cfg.get('slow_sma_period', 200),
+            bull_slope_threshold=regime_cfg.get('bull_slope_threshold', 0.05),
+            bear_slope_threshold=regime_cfg.get('bear_slope_threshold', -0.05),
+        ))
+        self._current_regime = MarketRegime.UNKNOWN
+        self._regime_adjustments: Dict[str, float] = {}
+
+        # Store base configs for regime adjustment
+        self._base_default_config = default_config
+        self._base_pair_params = dict(pair_params)
 
         # Order execution settings
         self.use_maker_orders = self.config.get('execution', {}).get('use_maker_orders', True)
@@ -176,6 +195,13 @@ class ScalpingTrader:
                 self.pair_manager.from_dict(state.get('pair_manager', {}))
                 if 'circuit_breaker' in state:
                     self.circuit_breaker.from_dict(state['circuit_breaker'])
+                if 'regime_detector' in state:
+                    self.regime_detector.from_dict(state['regime_detector'])
+                if 'current_regime' in state:
+                    try:
+                        self._current_regime = MarketRegime(state['current_regime'])
+                    except ValueError:
+                        pass
                 self.logger.info("Loaded saved state")
             except Exception as e:
                 self.logger.error(f"Error loading state: {e}")
@@ -188,6 +214,8 @@ class ScalpingTrader:
             'capital': self.capital,
             'pair_manager': self.pair_manager.to_dict(),
             'circuit_breaker': self.circuit_breaker.to_dict(),
+            'regime_detector': self.regime_detector.to_dict(),
+            'current_regime': self._current_regime.value,
             'last_update': datetime.now(timezone.utc).isoformat()
         }
         state_file = self.data_dir / "state.json"
@@ -212,13 +240,104 @@ class ScalpingTrader:
             self.logger.error(f"Error fetching data for {pair}: {e}")
             return None
 
+    def _update_regime(self) -> None:
+        """
+        Detect market regime using BTC as the reference market.
+
+        Adjusts strategy parameters (TP, SL, position size, confirmations)
+        based on the detected regime. Rebuilds strategy instances when the
+        regime changes.
+        """
+        # Use BTC as regime reference (largest, most liquid)
+        reference_pair = "BTC/USD"
+        try:
+            ohlc = self.client.get_ohlc(reference_pair, interval=60)
+            if not ohlc or len(ohlc) < 200:
+                return  # Not enough data yet
+        except Exception as e:
+            self.logger.error(f"Error fetching regime data: {e}")
+            return
+
+        closes = [c.close for c in ohlc]
+        highs = [c.high for c in ohlc]
+        lows = [c.low for c in ohlc]
+
+        result = self.regime_detector.detect(closes, highs, lows)
+        adjustments = self.regime_detector.get_adjustments(result.regime)
+
+        if result.regime != self._current_regime:
+            self.logger.info(
+                f"REGIME CHANGE: {self._current_regime.value} -> {result.regime.value}",
+                confidence=f"{result.confidence:.2f}",
+                sma_slope=f"{result.sma_slope_pct:.3f}%/period",
+                price_vs_200sma=f"{result.price_vs_slow_sma_pct:.1f}%",
+                atr=f"{result.atr_pct:.2f}%",
+                adjustments=adjustments.get('description', ''),
+            )
+
+            self._current_regime = result.regime
+            self._regime_adjustments = adjustments
+
+            # Rebuild strategies with regime-adjusted parameters
+            self._rebuild_strategies_for_regime(adjustments)
+
+    def _rebuild_strategies_for_regime(self, adjustments: Dict) -> None:
+        """Rebuild strategy instances with regime-adjusted parameters."""
+        fee_rate = self.fee_rate
+        tp_mult = adjustments.get('take_profit_multiplier', 1.0)
+        sl_mult = adjustments.get('stop_loss_multiplier', 1.0)
+        conf_offset = adjustments.get('min_confirmations_offset', 0)
+        ema_enabled = adjustments.get('ema_filter_enabled', True)
+
+        # Rebuild default strategy
+        base = self._base_default_config
+        adj_config = ScalpingConfig(
+            take_profit_percent=base.take_profit_percent * tp_mult,
+            stop_loss_percent=base.stop_loss_percent * sl_mult,
+            min_confirmations=max(1, base.min_confirmations + conf_offset),
+            fee_percent=fee_rate,
+            ema_filter_enabled=ema_enabled,
+        )
+        self.strategy = ScalpingStrategy(adj_config)
+
+        # Rebuild per-pair strategies
+        self.pair_strategies = {}
+        for pair, params in self._base_pair_params.items():
+            base_tp = params.get('take_profit_percent', base.take_profit_percent)
+            base_sl = params.get('stop_loss_percent', base.stop_loss_percent)
+            base_conf = params.get('min_confirmations', base.min_confirmations)
+
+            pair_config = ScalpingConfig(
+                take_profit_percent=base_tp * tp_mult,
+                stop_loss_percent=base_sl * sl_mult,
+                rsi_period=params.get('rsi_period', base.rsi_period),
+                rsi_oversold=params.get('rsi_oversold', base.rsi_oversold),
+                rsi_overbought=params.get('rsi_overbought', base.rsi_overbought),
+                bb_period=params.get('bb_period', base.bb_period),
+                bb_std_dev=params.get('bb_std_dev', base.bb_std_dev),
+                vwap_threshold_percent=params.get('vwap_threshold_percent', base.vwap_threshold_percent),
+                volume_spike_threshold=params.get('volume_spike_threshold', base.volume_spike_threshold),
+                min_confirmations=max(1, base_conf + conf_offset),
+                fee_percent=fee_rate,
+                ema_filter_enabled=ema_enabled,
+            )
+            self.pair_strategies[pair] = ScalpingStrategy(pair_config)
+
+        self.logger.info(
+            f"Strategies rebuilt for {self._current_regime.value} regime",
+            tp_mult=tp_mult,
+            sl_mult=sl_mult,
+            conf_offset=conf_offset,
+            ema_filter=ema_enabled,
+        )
+
     def _get_strategy_for_pair(self, pair: str) -> ScalpingStrategy:
         """Get the strategy for a specific pair (per-pair or default)."""
         return self.pair_strategies.get(pair, self.strategy)
 
     def _process_pair(self, pair: str) -> None:
         """Process a single trading pair."""
-        # Check if pair is enabled
+        # Check if pair is enabled by adaptive manager
         if not self.pair_manager.is_pair_enabled(pair):
             return
 
@@ -241,7 +360,6 @@ class ScalpingTrader:
             entry_price = position_data['entry_price']
             pnl_pct = ((current_price - entry_price) / entry_price) * 100
 
-            # Debug logging for position monitoring
             self.logger.info(
                 f"Checking {pair}",
                 entry_price=f"${entry_price:.2f}",
@@ -261,8 +379,6 @@ class ScalpingTrader:
             )
 
             signal = strategy.analyze(market_data, position)
-
-            # Log what signal we got
             self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
 
             if signal.signal_type.value in ("sell", "close_long"):
@@ -274,7 +390,7 @@ class ScalpingTrader:
 
                 self.capital += pnl_usd
 
-                # Record trade
+                # Record trade in adaptive manager
                 self.pair_manager.record_trade(
                     pair=pair,
                     entry_time=position.entry_time,
@@ -291,11 +407,8 @@ class ScalpingTrader:
                 else:
                     self.metrics['losses'] += 1
 
-                # Record win/loss in circuit breaker
-                if pnl_usd > 0:
-                    self.circuit_breaker.record_win()
-                else:
-                    self.circuit_breaker.record_loss()
+                # Record trade in drawdown-based circuit breaker
+                self.circuit_breaker.record_trade(pair, pnl_usd)
 
                 self.logger.info(
                     f"CLOSED {pair}",
@@ -303,6 +416,7 @@ class ScalpingTrader:
                     pnl_pct=f"{net_pnl_pct:.2f}%",
                     pnl_usd=f"${pnl_usd:.2f}",
                     capital=f"${self.capital:.2f}",
+                    regime=self._current_regime.value,
                     circuit_breaker=self.circuit_breaker.get_state().state.value
                 )
 
@@ -310,15 +424,24 @@ class ScalpingTrader:
                 self._save_state()
 
         else:
-            # Check circuit breaker before looking for entries
+            # Check global circuit breaker
             if not self.circuit_breaker.is_trading_allowed():
                 cb_state = self.circuit_breaker.get_state()
                 remaining = self.circuit_breaker.time_until_ready()
                 self.logger.warning(
-                    f"Circuit breaker OPEN for {pair} - skipping entry",
+                    f"Circuit breaker OPEN - skipping {pair} entry",
                     state=cb_state.state.value,
                     reason=cb_state.trigger_reason,
                     time_remaining=str(remaining) if remaining else "manual reset needed"
+                )
+                return
+
+            # Check per-pair circuit breaker
+            if not self.circuit_breaker.is_pair_allowed(pair):
+                ps = self.circuit_breaker.get_pair_state(pair)
+                self.logger.warning(
+                    f"Pair {pair} paused by circuit breaker",
+                    reason=ps.pause_reason if ps else "unknown"
                 )
                 return
 
@@ -326,15 +449,18 @@ class ScalpingTrader:
             signal = strategy.analyze(market_data, None)
 
             if signal.signal_type.value == "buy":
-                # Calculate available capital (not already deployed)
                 deployed_capital = sum(p['size_usd'] for p in self.positions.values())
                 available_capital = self.capital - deployed_capital
 
-                # Get position scale from adaptive manager
+                # Scale position: adaptive manager * regime adjustment
                 scale = self.pair_manager.get_position_scale(pair)
-                size_usd = self.initial_capital * (self.position_size_pct / 100) * scale
+                regime_scale = self._regime_adjustments.get(
+                    'position_scale_multiplier', 1.0
+                )
+                total_scale = scale * regime_scale
 
-                # Check if we have enough available capital
+                size_usd = self.initial_capital * (self.position_size_pct / 100) * total_scale
+
                 if size_usd > available_capital:
                     self.logger.warning(
                         f"Skipping {pair} entry - insufficient capital",
@@ -350,7 +476,8 @@ class ScalpingTrader:
                     'size': size,
                     'size_usd': size_usd,
                     'entry_time': datetime.now(timezone.utc).isoformat(),
-                    'reason': signal.reason
+                    'reason': signal.reason,
+                    'regime': self._current_regime.value,
                 }
 
                 self.logger.info(
@@ -358,7 +485,8 @@ class ScalpingTrader:
                     reason=signal.reason,
                     price=f"${current_price:.2f}",
                     size_usd=f"${size_usd:.2f}",
-                    scale=f"{scale:.2f}x",
+                    scale=f"{total_scale:.2f}x (adaptive={scale:.2f} regime={regime_scale:.2f})",
+                    regime=self._current_regime.value,
                     available_after=f"${available_capital - size_usd:.2f}"
                 )
 
@@ -373,6 +501,20 @@ class ScalpingTrader:
 
         while self.running:
             try:
+                # Detect market regime and adjust strategy parameters
+                self._update_regime()
+
+                # Re-enable pairs whose cooldown has expired
+                reenabled = self.pair_manager.check_reenable_pairs()
+                if reenabled:
+                    self.logger.info(
+                        f"Re-enabled {len(reenabled)} pairs after cooldown",
+                        pairs=reenabled
+                    )
+
+                # Update circuit breaker equity tracking
+                self.circuit_breaker.update_equity(self.capital)
+
                 for pair in self.pairs:
                     self._process_pair(pair)
                     time.sleep(1)  # Rate limit between pairs
@@ -406,6 +548,10 @@ class ScalpingTrader:
         """Get current status for dashboard."""
         win_rate = (self.metrics['wins'] / self.metrics['total_trades'] * 100) if self.metrics['total_trades'] > 0 else 0
 
+        regime_info = self.regime_detector.to_dict()
+        regime_info['current'] = self._current_regime.value
+        regime_info['adjustments'] = self._regime_adjustments
+
         return {
             'strategy': 'scalping',
             'paper_trading': self.paper_trading,
@@ -421,7 +567,8 @@ class ScalpingTrader:
             },
             'enabled_pairs': self.pair_manager.get_enabled_pairs(self.pairs),
             'disabled_pairs': [p for p in self.pairs if not self.pair_manager.is_pair_enabled(p)],
-            'circuit_breaker': self.circuit_breaker.to_dict()
+            'circuit_breaker': self.circuit_breaker.to_dict(),
+            'regime': regime_info,
         }
 
 
@@ -441,7 +588,9 @@ def main():
            SCALPING STRATEGY TRADER
 ================================================================
   Mean-reversion scalping with adaptive pair management
-  Pairs auto-disable after poor performance
+  Regime detection: auto-adjusts for bull/bear/sideways
+  Drawdown-based circuit breaker (per-pair + global)
+  Pairs auto-disable/re-enable after cooldown
   Using MAKER orders for lower fees (0.16% vs 0.26%)
 ================================================================
     """)

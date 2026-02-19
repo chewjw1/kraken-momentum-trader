@@ -114,15 +114,27 @@ execution:
   maker_price_offset: 0.0     # Place at bid/ask for fast fills
   order_timeout_seconds: 60   # Cancel unfilled orders after 60s
 
-# Circuit breaker - halts ALL trading after consecutive losses
+# Circuit breaker - drawdown-based (per-pair + global)
 circuit_breaker:
-  consecutive_loss_limit: 3   # Pause after 3 consecutive losses
-  cooldown_hours: 4           # Wait 4 hours before resuming
+  global_max_drawdown_pct: 5.0  # Halt ALL trading if account down 5% from peak
+  cooldown_hours: 4             # Wait 4 hours before resuming
+  pair_max_drawdown_pct: 3.0    # Pause single pair if down 3% of capital
+  pair_cooldown_hours: 2.0      # Per-pair cooldown
+  consecutive_loss_limit: 5     # Secondary: pause after 5 consecutive losses
+
+# Regime detector - auto-classifies bull/bear/sideways
+# Adjusts TP/SL, position size, confirmations, and EMA filter per regime
+regime_detector:
+  fast_sma_period: 50           # For slope calculation
+  slow_sma_period: 200          # For trend confirmation
+  bull_slope_threshold: 0.05    # SMA rising > 0.05%/period = bull
+  bear_slope_threshold: -0.05   # SMA falling < -0.05%/period = bear
 
 # EMA trend filter - blocks entries during strong downtrends
+# (Regime detector may override this: disabled in sideways, enabled in bear)
 ema_filter:
   enabled: true
-  bearish_threshold: -0.5     # Block if EMA trend strength < -0.5%
+  bearish_threshold: -0.5       # Block if EMA trend strength < -0.5%
 
 # Trading loop settings
 trading:

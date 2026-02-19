@@ -36,6 +36,7 @@ except ImportError:
 
 from src.backtest.ccxt_data_provider import CCXTDataProvider
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
+from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
 from src.strategy.base_strategy import MarketData, Position, SignalType
 from src.exchange.kraken_client import OHLC
 from src.observability.logger import get_logger, configure_logging
@@ -65,7 +66,6 @@ class ScalpingOptimizerConfig:
         if self.end_date is None:
             self.end_date = datetime.now(timezone.utc)
         if self.start_date is None:
-            # Default: 30 days for minute-level, we'll use hourly for faster backtest
             self.start_date = self.end_date - timedelta(days=90)
 
 
@@ -557,6 +557,286 @@ class ScalpingOptimizer:
         return output_path
 
 
+class RegimeAwareOptimizer:
+    """
+    Optimizes scalping parameters per market regime.
+
+    Segments historical data into bull/bear/sideways windows using the
+    RegimeDetector, then runs separate Optuna studies for each regime.
+    The output is a config with per-regime parameter sets that the live
+    trader can switch between automatically.
+    """
+
+    def __init__(self, config: ScalpingOptimizerConfig):
+        if not OPTUNA_AVAILABLE:
+            raise ImportError("optuna is required. Install: pip install optuna")
+
+        self.config = config
+        self._historical_data: Dict[str, List[OHLC]] = {}
+        self._ccxt_provider: Optional[CCXTDataProvider] = None
+        self._regime_detector = RegimeDetector(RegimeConfig(
+            fast_sma_period=50,
+            slow_sma_period=200,
+            min_data_points=200,
+        ))
+        self._results: Dict[str, Dict[str, Any]] = {}  # pair -> regime -> results
+
+    @property
+    def ccxt_provider(self) -> CCXTDataProvider:
+        if self._ccxt_provider is None:
+            self._ccxt_provider = CCXTDataProvider(
+                cache_dir=self.config.cache_dir, use_cache=True
+            )
+        return self._ccxt_provider
+
+    def prefetch_data(self, show_progress: bool = True) -> None:
+        """Pre-fetch historical data for all pairs."""
+        days = (self.config.end_date - self.config.start_date).days
+        print(f"\nFetching {days} days of historical data...")
+        print(f"  Period: {self.config.start_date.date()} to {self.config.end_date.date()}")
+
+        for pair in self.config.pairs:
+            print(f"\n  Fetching {pair}...")
+
+            def progress_cb(current: int, total: int) -> None:
+                if show_progress and total > 0:
+                    pct = current / total * 100
+                    print(f"\r    Progress: {current}/{total} ({pct:.0f}%)...", end="", flush=True)
+
+            candles = self.ccxt_provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None
+            )
+            if show_progress:
+                print()
+
+            if not candles:
+                raise ValueError(f"Failed to fetch data for {pair}")
+
+            self._historical_data[pair] = candles
+            print(f"    Loaded {len(candles)} candles for {pair}")
+
+    def segment_by_regime(self, pair: str) -> Dict[MarketRegime, List[List[OHLC]]]:
+        """
+        Segment candle data into windows by detected regime.
+
+        Returns a dict mapping regime -> list of contiguous candle windows
+        belonging to that regime. Each window is at least 200 candles.
+        """
+        candles = self._historical_data[pair]
+        if len(candles) < 250:
+            return {MarketRegime.UNKNOWN: [candles]}
+
+        # Classify each candle (using rolling window)
+        min_pts = 200
+        regime_labels = []
+        for i in range(len(candles)):
+            if i < min_pts:
+                regime_labels.append(MarketRegime.UNKNOWN)
+                continue
+            window = candles[max(0, i - min_pts):i + 1]
+            closes = [c.close for c in window]
+            highs = [c.high for c in window]
+            lows = [c.low for c in window]
+            result = self._regime_detector.detect(closes, highs, lows)
+            regime_labels.append(result.regime)
+
+        # Group contiguous runs of the same regime into windows
+        segments: Dict[MarketRegime, List[List[OHLC]]] = {
+            MarketRegime.BULL: [],
+            MarketRegime.BEAR: [],
+            MarketRegime.SIDEWAYS: [],
+        }
+
+        current_regime = regime_labels[min_pts] if len(regime_labels) > min_pts else MarketRegime.UNKNOWN
+        window_start = min_pts
+
+        for i in range(min_pts + 1, len(candles)):
+            if regime_labels[i] != current_regime or i == len(candles) - 1:
+                # End of segment
+                window = candles[window_start:i]
+                if len(window) >= 50 and current_regime in segments:  # Min 50 candles
+                    segments[current_regime].append(window)
+                current_regime = regime_labels[i]
+                window_start = i
+
+        # Print segment summary
+        for regime, windows in segments.items():
+            total = sum(len(w) for w in windows)
+            print(f"    {regime.value}: {len(windows)} windows, {total} total candles")
+
+        return segments
+
+    def optimize_per_regime(
+        self,
+        n_trials: Optional[int] = None,
+        show_progress: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Run per-pair, per-regime optimization.
+
+        Returns nested dict: pair -> regime -> {params, score, metrics}
+        """
+        n_trials = n_trials or self.config.n_trials
+
+        if not self._historical_data:
+            self.prefetch_data(show_progress)
+
+        all_results: Dict[str, Dict[str, Any]] = {}
+
+        for pair in self.config.pairs:
+            print(f"\n{'=' * 60}")
+            print(f"REGIME-AWARE OPTIMIZATION: {pair}")
+            print(f"{'=' * 60}")
+
+            segments = self.segment_by_regime(pair)
+            pair_results: Dict[str, Any] = {}
+
+            for regime, windows in segments.items():
+                if not windows:
+                    print(f"\n  {regime.value}: No data -- skipping")
+                    continue
+
+                # Concatenate all windows for this regime
+                all_candles = []
+                for w in windows:
+                    all_candles.extend(w)
+
+                if len(all_candles) < 100:
+                    print(f"\n  {regime.value}: Only {len(all_candles)} candles -- skipping")
+                    continue
+
+                print(f"\n  --- Optimizing for {regime.value} regime ({len(all_candles)} candles) ---")
+
+                pair_clean = pair.replace("/", "_")
+                study_name = f"regime_{pair_clean}_{regime.value}"
+                storage_path = self.config.storage_path.replace(
+                    ".db", f"_regime_{pair_clean}_{regime.value}.db"
+                )
+                storage_url = f"sqlite:///{storage_path}"
+                Path(storage_path).parent.mkdir(parents=True, exist_ok=True)
+
+                study = optuna.create_study(
+                    study_name=study_name,
+                    storage=storage_url,
+                    direction="maximize",
+                    load_if_exists=True,
+                )
+
+                runner = ScalpingBacktestRunner(
+                    initial_capital=self.config.initial_capital,
+                    position_size_percent=self.config.position_size_percent,
+                    fee_percent=self.config.fee_percent,
+                )
+
+                def objective(trial, c=all_candles, p=pair):
+                    params = {}
+                    for name, ranges in SCALPING_PARAMETER_RANGES.items():
+                        param_type = ranges.get("type", "float")
+                        if param_type == "int":
+                            params[name] = trial.suggest_int(
+                                name, int(ranges["low"]), int(ranges["high"]),
+                                step=int(ranges.get("step", 1))
+                            )
+                        else:
+                            params[name] = trial.suggest_float(
+                                name, ranges["low"], ranges["high"],
+                                step=ranges.get("step")
+                            )
+                    metrics = runner.run(c, p, params)
+                    trial.set_user_attr("total_trades", metrics["total_trades"])
+                    trial.set_user_attr("win_rate", metrics["win_rate"])
+                    trial.set_user_attr("total_return", metrics["total_return"])
+                    trial.set_user_attr("sharpe_ratio", metrics["sharpe_ratio"])
+                    trial.set_user_attr("profit_factor", metrics["profit_factor"])
+                    trial.set_user_attr("max_drawdown", metrics["max_drawdown_percent"])
+                    return metrics["score"]
+
+                study.optimize(
+                    objective,
+                    n_trials=n_trials,
+                    timeout=self.config.timeout_seconds,
+                    show_progress_bar=show_progress,
+                )
+
+                best = study.best_trial
+                pair_results[regime.value] = {
+                    "params": study.best_params,
+                    "score": study.best_value,
+                    "return": best.user_attrs.get("total_return", 0),
+                    "win_rate": best.user_attrs.get("win_rate", 0),
+                    "trades": best.user_attrs.get("total_trades", 0),
+                    "profit_factor": best.user_attrs.get("profit_factor", 0),
+                    "max_drawdown": best.user_attrs.get("max_drawdown", 0),
+                }
+
+                print(f"    Best score: {study.best_value:.2f}")
+                print(f"    Return: {best.user_attrs.get('total_return', 0)*100:.2f}%")
+                print(f"    Win rate: {best.user_attrs.get('win_rate', 0):.1f}%")
+
+            all_results[pair] = pair_results
+
+        self._results = all_results
+        return all_results
+
+    def print_summary(self) -> None:
+        """Print regime-aware optimization summary."""
+        print(f"\n{'=' * 70}")
+        print("REGIME-AWARE OPTIMIZATION SUMMARY")
+        print(f"{'=' * 70}")
+
+        for pair, regimes in self._results.items():
+            print(f"\n  {pair}:")
+            print(f"  {'Regime':<12} {'Score':>8} {'Return':>10} {'Trades':>8} {'WinRate':>10} {'PF':>8}")
+            print(f"  {'-'*58}")
+
+            for regime, result in regimes.items():
+                ret = result.get("return", 0) * 100
+                trades = result.get("trades", 0)
+                wr = result.get("win_rate", 0)
+                pf = result.get("profit_factor", 0)
+                score = result.get("score", 0)
+                print(f"  {regime:<12} {score:>8.1f} {ret:>9.2f}% {trades:>8} {wr:>9.1f}% {pf:>8.2f}")
+
+    def export_config(self, output_path: str = "config/scalping.regime.yaml") -> str:
+        """Export regime-aware config to YAML."""
+        import yaml
+
+        config = {
+            "_optimization": {
+                "type": "regime_aware",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "period_days": (self.config.end_date - self.config.start_date).days,
+                "regimes": ["bull", "bear", "sideways"],
+            },
+            "regime_parameters": {},
+        }
+
+        for pair, regimes in self._results.items():
+            config["regime_parameters"][pair] = {}
+            for regime, result in regimes.items():
+                params = result.get("params", {})
+                config["regime_parameters"][pair][regime] = {
+                    **params,
+                    "_metrics": {
+                        "score": result.get("score", 0),
+                        "return": result.get("return", 0),
+                        "win_rate": result.get("win_rate", 0),
+                        "trades": result.get("trades", 0),
+                    }
+                }
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+        print(f"\nExported regime-aware config to {output_path}")
+        return output_path
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -587,8 +867,16 @@ def parse_args():
         help="Candle interval in minutes (default: 60)"
     )
     parser.add_argument(
+        "--days", type=int, default=90,
+        help="Days of historical data (default: 90, use 730 for 2 years)"
+    )
+    parser.add_argument(
         "--per-pair", action="store_true",
         help="Optimize each pair separately (recommended)"
+    )
+    parser.add_argument(
+        "--regime-aware", action="store_true",
+        help="Segment data by bull/bear/sideways and optimize per regime"
     )
     parser.add_argument(
         "--export", action="store_true",
@@ -623,12 +911,14 @@ def main():
 
     # Parse dates
     end_date = parse_date(args.end) if args.end else datetime.now(timezone.utc)
-    start_date = parse_date(args.start) if args.start else end_date - timedelta(days=90)
+    start_date = parse_date(args.start) if args.start else end_date - timedelta(days=args.days)
 
+    mode = "REGIME-AWARE" if args.regime_aware else "PER-PAIR"
     print(f"\nConfiguration:")
+    print(f"  Mode: {mode}")
     print(f"  Pairs: {', '.join(args.pairs)}")
-    print(f"  Trials: {args.trials} per pair")
-    print(f"  Period: {start_date.date()} to {end_date.date()}")
+    print(f"  Trials: {args.trials} per pair/regime")
+    print(f"  Period: {start_date.date()} to {end_date.date()} ({args.days} days)")
     print(f"  Interval: {args.interval} minutes")
 
     config = ScalpingOptimizerConfig(
@@ -640,26 +930,38 @@ def main():
     )
 
     try:
-        optimizer = ScalpingOptimizer(config)
+        if args.regime_aware:
+            # Regime-aware optimization: segments data by bull/bear/sideways
+            optimizer = RegimeAwareOptimizer(config)
+            results = optimizer.optimize_per_regime(
+                show_progress=not args.no_progress
+            )
+            optimizer.print_summary()
+            if args.export:
+                export_path = args.export_path.replace(
+                    ".yaml", ".regime.yaml"
+                ) if "regime" not in args.export_path else args.export_path
+                optimizer.export_config(export_path)
+        else:
+            # Standard per-pair optimization
+            optimizer = ScalpingOptimizer(config)
+            results = optimizer.optimize_per_pair(
+                show_progress=not args.no_progress
+            )
+            optimizer.print_summary()
+            if args.export:
+                optimizer.export_config(args.export_path)
+
     except ImportError as e:
         print(f"\nError: {e}")
         print("Install: pip install optuna ccxt")
         sys.exit(1)
 
-    try:
-        # Always do per-pair optimization for scalping
-        results = optimizer.optimize_per_pair(
-            show_progress=not args.no_progress
-        )
-
-        optimizer.print_summary()
-
-        if args.export:
-            optimizer.export_config(args.export_path)
-
     except KeyboardInterrupt:
         print("\n\nOptimization interrupted.")
-        if optimizer._per_pair_results:
+        if hasattr(optimizer, '_per_pair_results') and optimizer._per_pair_results:
+            optimizer.print_summary()
+        elif hasattr(optimizer, '_results') and optimizer._results:
             optimizer.print_summary()
         sys.exit(1)
 
