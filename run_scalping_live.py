@@ -107,7 +107,7 @@ class ScalpingTrader:
         # Trading state (set early so circuit breaker can reference initial_capital)
         self.pairs = self.config.get('pairs', ['SOL/USD'])
         self.positions: Dict[str, dict] = {}
-        self.capital = getattr(self.client, 'paper_balance', None) or self.config.get('position', {}).get('initial_capital', 10000.0)
+        self.capital = self._fetch_initial_capital()
         self.initial_capital = self.capital
         self.position_size_pct = self.config.get('position', {}).get('size_percent', 20.0)
 
@@ -181,6 +181,39 @@ class ScalpingTrader:
                 return yaml.safe_load(f)
         except FileNotFoundError:
             return {}
+
+    def _fetch_initial_capital(self) -> float:
+        """
+        Fetch starting capital from real Kraken account balance.
+
+        Falls back to config 'initial_capital' or $10,000 default if the
+        API call fails (e.g. no credentials, network error).
+        """
+        fallback = self.config.get('position', {}).get('initial_capital', 10000.0)
+        try:
+            # Temporarily bypass paper mode to hit real API
+            orig_paper = self.client.paper_trading
+            self.client.paper_trading = False
+            balances = self.client.get_balances()
+            self.client.paper_trading = orig_paper
+
+            usd_balance = balances.get("USD")
+            if usd_balance and usd_balance.total > 0:
+                print(f"  Kraken account balance: ${usd_balance.total:.2f} USD")
+                return usd_balance.total
+
+            # Sum stablecoin equivalents if no pure USD
+            usdt = balances.get("USDT")
+            if usdt and usdt.total > 0:
+                print(f"  Kraken account balance: ${usdt.total:.2f} USDT")
+                return usdt.total
+
+            print(f"  No USD balance found on Kraken, using config fallback: ${fallback:.2f}")
+            return fallback
+
+        except Exception as e:
+            print(f"  Could not fetch Kraken balance ({e}), using fallback: ${fallback:.2f}")
+            return fallback
 
     def _load_state(self) -> None:
         """Load saved state from disk."""
@@ -577,13 +610,13 @@ def main():
     parser.add_argument("--config", default="config/scalping.yaml", help="Config file path")
     parser.add_argument("--data-dir", default="data/scalping", help="Data directory")
     parser.add_argument("--live", action="store_true", help="Enable live trading (default: paper)")
-    parser.add_argument("--dashboard-port", type=int, default=5001, help="Dashboard port")
+    parser.add_argument("--dashboard-port", type=int, default=44490, help="Dashboard port")
 
     args = parser.parse_args()
 
     configure_logging(level="INFO", format_type="json")
 
-    print("""
+    print(f"""
 ================================================================
            SCALPING STRATEGY TRADER
 ================================================================
@@ -592,6 +625,7 @@ def main():
   Drawdown-based circuit breaker (per-pair + global)
   Pairs auto-disable/re-enable after cooldown
   Using MAKER orders for lower fees (0.16% vs 0.26%)
+  Dashboard: http://jfk21.phoebe.usbx.me:{args.dashboard_port}
 ================================================================
     """)
 

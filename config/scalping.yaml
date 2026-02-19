@@ -97,7 +97,10 @@ adaptive:
   reenable_win_rate: 0.50     # Re-enable if simulated WR > 50%
 
 # Position sizing
+# initial_capital: auto-fetched from Kraken account on first start.
+# Set a value here as fallback if API keys are unavailable.
 position:
+  initial_capital: 10000.0      # Fallback only; real balance fetched from Kraken
   size_percent: 20.0
   confidence_scaling: true
   min_scale: 0.5
