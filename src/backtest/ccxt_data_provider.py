@@ -192,6 +192,8 @@ class CCXTDataProvider:
         total_candles_needed = (end_timestamp - current_since) // interval_ms
         total_requests = max(1, total_candles_needed // self.CANDLES_PER_REQUEST)
         requests_made = 0
+        consecutive_errors = 0
+        max_consecutive_errors = 5  # Give up after 5 consecutive failures
 
         while current_since < end_timestamp:
             try:
@@ -206,6 +208,8 @@ class CCXTDataProvider:
                 if not ohlcv:
                     logger.warning("No candles returned from Binance, breaking loop")
                     break
+
+                consecutive_errors = 0  # Reset on success
 
                 # Convert to OHLC dataclass format
                 for candle in ohlcv:
@@ -249,7 +253,14 @@ class CCXTDataProvider:
                 time.sleep(self.RATE_LIMIT_DELAY)
 
             except Exception as e:
+                consecutive_errors += 1
                 logger.error(f"Error fetching OHLCV data from Binance: {e}")
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(
+                        f"Binance API unreachable after {max_consecutive_errors} "
+                        f"consecutive errors, aborting fetch for {pair}"
+                    )
+                    break
                 # Wait longer on error
                 time.sleep(self.RATE_LIMIT_DELAY * 5)
                 continue

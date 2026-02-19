@@ -231,15 +231,16 @@ class ScalpingBacktestRunner:
         gross_loss = abs(sum(t["pnl_usd"] for t in trades if t["pnl_usd"] < 0))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
-        # Sharpe estimate
+        # Sharpe estimate (capped to avoid inf with tiny sample sizes)
         returns = [t["pnl_percent"] for t in trades]
         if len(returns) > 1:
             avg_ret = sum(returns) / len(returns)
             variance = sum((r - avg_ret) ** 2 for r in returns) / (len(returns) - 1)
             std_dev = variance ** 0.5
-            sharpe = avg_ret / std_dev if std_dev > 0 else 0
+            sharpe = avg_ret / std_dev if std_dev > 0.001 else 0
         else:
             sharpe = 0
+        sharpe = max(min(sharpe, 10.0), -10.0)  # Cap at +/- 10
 
         # Max drawdown
         peak = self.initial_capital
@@ -855,8 +856,8 @@ def parse_args():
     )
     parser.add_argument(
         "--interval", type=int, default=60,
-        choices=[1, 5, 15, 30, 60, 240],
-        help="Candle interval in minutes (default: 60)"
+        choices=[1, 5, 15, 30, 60, 240, 1440],
+        help="Candle interval in minutes (default: 60, 1440=daily)"
     )
     parser.add_argument(
         "--days", type=int, default=90,

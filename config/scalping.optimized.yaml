@@ -1,53 +1,69 @@
 _optimization:
-  generated_at: '2026-02-19T20:25:39.641921+00:00'
+  generated_at: '2026-02-19T20:31:57.838188+00:00'
   study_name: scalping_optimization
-  period_days: 30
+  period_days: 120
 pair_parameters:
   BTC/USD:
     take_profit_percent: 2.0
-    stop_loss_percent: 2.5
-    rsi_period: 14
-    rsi_oversold: 25
+    stop_loss_percent: 1.0
+    rsi_period: 12
+    rsi_oversold: 20
     rsi_overbought: 80
-    bb_period: 25
+    bb_period: 10
     bb_std_dev: 1.75
     vwap_threshold_percent: 0.1
-    volume_spike_threshold: 2.5
+    volume_spike_threshold: 2.0
     min_confirmations: 1
     _metrics:
-      score: -3.535659089186507
-      return: -0.05018347838572536
-      win_rate: 42.857142857142854
-      trades: 21
-  SOL/USD:
-    take_profit_percent: 2.0
-    stop_loss_percent: 1.5
-    rsi_period: 12
-    rsi_oversold: 30
-    rsi_overbought: 75
-    bb_period: 15
-    bb_std_dev: 2.25
-    vwap_threshold_percent: 0.5
-    volume_spike_threshold: 1.5
-    min_confirmations: 2
-    _metrics:
-      score: -3.6273028001042933
-      return: -0.023939395673840045
-      win_rate: 37.5
-      trades: 16
-  XRP/USD:
-    take_profit_percent: 7.5
+      score: -2.7363894724758793
+      return: -0.04610236934276654
+      win_rate: 33.33333333333333
+      trades: 33
+  ETH/USD:
+    take_profit_percent: 6.0
     stop_loss_percent: 1.0
-    rsi_period: 10
-    rsi_oversold: 20
-    rsi_overbought: 75
-    bb_period: 30
+    rsi_period: 14
+    rsi_oversold: 25
+    rsi_overbought: 60
+    bb_period: 25
     bb_std_dev: 2.25
     vwap_threshold_percent: 0.7000000000000001
-    volume_spike_threshold: 1.0
-    min_confirmations: 1
+    volume_spike_threshold: 2.25
+    min_confirmations: 2
     _metrics:
-      score: -3.308658670637478
-      return: -0.05525200596604991
-      win_rate: 12.5
-      trades: 32
+      score: .inf
+      return: 0.023438262413012306
+      win_rate: 100.0
+      trades: 2
+  SOL/USD:
+    take_profit_percent: 3.5
+    stop_loss_percent: 2.5
+    rsi_period: 14
+    rsi_oversold: 40
+    rsi_overbought: 80
+    bb_period: 30
+    bb_std_dev: 2.5
+    vwap_threshold_percent: 0.7000000000000001
+    volume_spike_threshold: 1.75
+    min_confirmations: 2
+    _metrics:
+      score: -3.2304143859010535
+      return: 0.004610596664801051
+      win_rate: 54.54545454545454
+      trades: 11
+  XRP/USD:
+    take_profit_percent: 3.0
+    stop_loss_percent: 1.0
+    rsi_period: 6
+    rsi_oversold: 25
+    rsi_overbought: 70
+    bb_period: 25
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.7000000000000001
+    volume_spike_threshold: 1.5
+    min_confirmations: 4
+    _metrics:
+      score: .inf
+      return: 0.005966057286817522
+      win_rate: 100.0
+      trades: 1
