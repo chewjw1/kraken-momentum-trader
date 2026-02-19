@@ -114,6 +114,16 @@ execution:
   maker_price_offset: 0.0     # Place at bid/ask for fast fills
   order_timeout_seconds: 60   # Cancel unfilled orders after 60s
 
+# Circuit breaker - halts ALL trading after consecutive losses
+circuit_breaker:
+  consecutive_loss_limit: 3   # Pause after 3 consecutive losses
+  cooldown_hours: 4           # Wait 4 hours before resuming
+
+# EMA trend filter - blocks entries during strong downtrends
+ema_filter:
+  enabled: true
+  bearish_threshold: -0.5     # Block if EMA trend strength < -0.5%
+
 # Trading loop settings
 trading:
   check_interval_seconds: 60

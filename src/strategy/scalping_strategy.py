@@ -67,6 +67,10 @@ class ScalpingConfig:
     fee_percent: float = 0.26  # Kraken taker fee
     min_profit_after_fees: float = 0.5  # Minimum net profit target
 
+    # EMA trend filter
+    ema_filter_enabled: bool = True  # Block entries during bearish trends
+    ema_bearish_threshold: float = -0.5  # Block entry if EMA trend strength below this %
+
 
 class ScalpingStrategy(BaseStrategy):
     """
@@ -239,6 +243,16 @@ class ScalpingStrategy(BaseStrategy):
         if bb and bb.is_squeeze:
             confirmations += 0.5  # Partial confirmation
             reasons.append("BB squeeze detected")
+
+        # EMA trend filter - block entries in strong downtrends
+        if self.config.ema_filter_enabled and ema:
+            if ema.trend_strength < self.config.ema_bearish_threshold:
+                return self._no_signal(
+                    market_data.pair,
+                    f"EMA bearish filter: trend strength {ema.trend_strength:.2f}% "
+                    f"(threshold: {self.config.ema_bearish_threshold}%)",
+                    timestamp
+                )
 
         # Check if we have enough confirmations
         if confirmations >= self.config.min_confirmations:

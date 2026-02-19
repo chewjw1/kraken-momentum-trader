@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.strategy.signals.rsi import RSIIndicator, calculate_rsi
 from src.strategy.signals.ema import EMAIndicator, calculate_ema, calculate_ema_crossover
-from src.strategy.signals.volume import VolumeIndicator, analyze_volume
+from src.strategy.signals.volume import VolumeIndicator
 
 
 class TestRSIIndicator:
@@ -217,7 +217,7 @@ class TestSignalIntegration:
 
         rsi = calculate_rsi(prices)
         ema = calculate_ema_crossover(prices)
-        volume = analyze_volume(volumes, prices)
+        volume = VolumeIndicator().calculate(volumes, prices)
 
         assert rsi is not None
         assert ema is not None
@@ -235,7 +235,7 @@ class TestSignalIntegration:
 
         rsi = calculate_rsi(prices)
         ema = calculate_ema_crossover(prices, short_period=5, long_period=10)
-        volume = analyze_volume(volumes, prices)
+        volume = VolumeIndicator().calculate(volumes, prices)
 
         assert rsi is not None
         assert ema is not None

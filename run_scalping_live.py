@@ -29,6 +29,7 @@ from src.exchange.kraken_client import KrakenClient
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.base_strategy import MarketData, Position
 from src.core.adaptive_pair_manager import AdaptivePairManager, AdaptiveConfig
+from src.risk.circuit_breaker import CircuitBreaker
 from src.observability.logger import configure_logging, get_logger
 
 
@@ -102,6 +103,13 @@ class ScalpingTrader:
         )
         self.pair_manager = AdaptivePairManager(adaptive_config)
 
+        # Circuit breaker - halts all trading after consecutive losses
+        cb_config = self.config.get('circuit_breaker', {})
+        self.circuit_breaker = CircuitBreaker(
+            consecutive_loss_limit=cb_config.get('consecutive_loss_limit', 3),
+            cooldown_hours=cb_config.get('cooldown_hours', 4)
+        )
+
         # Trading state
         self.pairs = self.config.get('pairs', ['SOL/USD'])
         self.positions: Dict[str, dict] = {}
@@ -166,6 +174,8 @@ class ScalpingTrader:
                 self.metrics = state.get('metrics', self.metrics)
                 self.capital = state.get('capital', self.capital)
                 self.pair_manager.from_dict(state.get('pair_manager', {}))
+                if 'circuit_breaker' in state:
+                    self.circuit_breaker.from_dict(state['circuit_breaker'])
                 self.logger.info("Loaded saved state")
             except Exception as e:
                 self.logger.error(f"Error loading state: {e}")
@@ -177,6 +187,7 @@ class ScalpingTrader:
             'metrics': self.metrics,
             'capital': self.capital,
             'pair_manager': self.pair_manager.to_dict(),
+            'circuit_breaker': self.circuit_breaker.to_dict(),
             'last_update': datetime.now(timezone.utc).isoformat()
         }
         state_file = self.data_dir / "state.json"
@@ -280,18 +291,37 @@ class ScalpingTrader:
                 else:
                     self.metrics['losses'] += 1
 
+                # Record win/loss in circuit breaker
+                if pnl_usd > 0:
+                    self.circuit_breaker.record_win()
+                else:
+                    self.circuit_breaker.record_loss()
+
                 self.logger.info(
                     f"CLOSED {pair}",
                     reason=signal.reason,
                     pnl_pct=f"{net_pnl_pct:.2f}%",
                     pnl_usd=f"${pnl_usd:.2f}",
-                    capital=f"${self.capital:.2f}"
+                    capital=f"${self.capital:.2f}",
+                    circuit_breaker=self.circuit_breaker.get_state().state.value
                 )
 
                 del self.positions[pair]
                 self._save_state()
 
         else:
+            # Check circuit breaker before looking for entries
+            if not self.circuit_breaker.is_trading_allowed():
+                cb_state = self.circuit_breaker.get_state()
+                remaining = self.circuit_breaker.time_until_ready()
+                self.logger.warning(
+                    f"Circuit breaker OPEN for {pair} - skipping entry",
+                    state=cb_state.state.value,
+                    reason=cb_state.trigger_reason,
+                    time_remaining=str(remaining) if remaining else "manual reset needed"
+                )
+                return
+
             # Look for entry
             signal = strategy.analyze(market_data, None)
 
@@ -390,7 +420,8 @@ class ScalpingTrader:
                 for pair in self.pairs
             },
             'enabled_pairs': self.pair_manager.get_enabled_pairs(self.pairs),
-            'disabled_pairs': [p for p in self.pairs if not self.pair_manager.is_pair_enabled(p)]
+            'disabled_pairs': [p for p in self.pairs if not self.pair_manager.is_pair_enabled(p)],
+            'circuit_breaker': self.circuit_breaker.to_dict()
         }
 
 

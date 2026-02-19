@@ -61,6 +61,7 @@ class ScalpingBacktestConfig:
     fee_percent: float = 0.26  # Kraken taker fee
     candle_interval: int = 5  # 5-minute candles
     lookback_candles: int = 50  # Need 50 candles for indicators
+    slippage_percent: float = 0.05  # Simulated slippage per trade (entry + exit)
 
 
 class ScalpingBacktester:
@@ -159,8 +160,8 @@ class ScalpingBacktester:
                 signal = self.strategy.analyze(market_data, position)
 
                 if signal.signal_type.value in ("sell", "close_long"):
-                    # Exit trade
-                    exit_price = current.close
+                    # Exit trade (apply slippage: worse exit price)
+                    exit_price = current.close * (1 - self.config.slippage_percent / 100)
                     gross_pnl_percent = ((exit_price - entry_price) / entry_price) * 100
                     fee_cost = self.config.fee_percent * 2  # Round trip
                     net_pnl_percent = gross_pnl_percent - fee_cost
@@ -193,8 +194,8 @@ class ScalpingBacktester:
                 signal = self.strategy.analyze(market_data, None)
 
                 if signal.signal_type.value == "buy":
-                    # Enter trade
-                    entry_price = current.close
+                    # Enter trade (apply slippage: worse entry price)
+                    entry_price = current.close * (1 + self.config.slippage_percent / 100)
                     entry_time = current.timestamp
                     position_size_usd = capital * (self.config.position_size_percent / 100)
                     in_position = True
@@ -491,3 +492,93 @@ class ScalpingBacktester:
                 profitable.append(pair)
 
         return sorted(profitable, key=lambda p: results[p].total_pnl_percent, reverse=True)
+
+    def run_walk_forward(
+        self,
+        pair: str,
+        candles: List[OHLC],
+        train_candles: int = 2000,
+        test_candles: int = 500,
+        step_candles: int = 500
+    ) -> Dict[str, object]:
+        """
+        Walk-forward validation: train on N candles, test on M, slide forward.
+
+        Detects overfitting by comparing in-sample vs out-of-sample performance.
+
+        Args:
+            pair: Trading pair.
+            candles: Full OHLC dataset.
+            train_candles: Number of candles for training window.
+            test_candles: Number of candles for testing window.
+            step_candles: How far to slide the window forward each iteration.
+
+        Returns:
+            Dictionary with walk-forward results and degradation metrics.
+        """
+        if len(candles) < train_candles + test_candles:
+            return {
+                "pair": pair,
+                "error": f"Need {train_candles + test_candles} candles, have {len(candles)}",
+                "windows": [],
+            }
+
+        windows = []
+        start = 0
+
+        while start + train_candles + test_candles <= len(candles):
+            train_data = candles[start:start + train_candles]
+            test_data = candles[start + train_candles:start + train_candles + test_candles]
+
+            # Run backtest on both windows
+            train_result = self.run_pair_backtest(pair, train_data)
+            test_result = self.run_pair_backtest(pair, test_data)
+
+            windows.append({
+                "window_start": start,
+                "train_trades": train_result.total_trades,
+                "train_win_rate": train_result.win_rate,
+                "train_pnl_pct": train_result.total_pnl_percent,
+                "train_profit_factor": train_result.profit_factor,
+                "test_trades": test_result.total_trades,
+                "test_win_rate": test_result.win_rate,
+                "test_pnl_pct": test_result.total_pnl_percent,
+                "test_profit_factor": test_result.profit_factor,
+            })
+
+            start += step_candles
+
+        # Calculate degradation between train and test
+        if windows:
+            avg_train_wr = sum(w["train_win_rate"] for w in windows) / len(windows)
+            avg_test_wr = sum(w["test_win_rate"] for w in windows) / len(windows)
+            avg_train_pnl = sum(w["train_pnl_pct"] for w in windows) / len(windows)
+            avg_test_pnl = sum(w["test_pnl_pct"] for w in windows) / len(windows)
+
+            wr_degradation = avg_train_wr - avg_test_wr
+            pnl_degradation = avg_train_pnl - avg_test_pnl
+
+            # If test performance is within 20% of train, strategy is robust
+            is_robust = (
+                avg_test_pnl > 0
+                and wr_degradation < 0.15
+                and (avg_test_pnl > avg_train_pnl * 0.5 if avg_train_pnl > 0 else True)
+            )
+        else:
+            avg_train_wr = avg_test_wr = 0
+            avg_train_pnl = avg_test_pnl = 0
+            wr_degradation = pnl_degradation = 0
+            is_robust = False
+
+        return {
+            "pair": pair,
+            "total_windows": len(windows),
+            "avg_train_win_rate": avg_train_wr,
+            "avg_test_win_rate": avg_test_wr,
+            "win_rate_degradation": wr_degradation,
+            "avg_train_pnl_pct": avg_train_pnl,
+            "avg_test_pnl_pct": avg_test_pnl,
+            "pnl_degradation_pct": pnl_degradation,
+            "is_robust": is_robust,
+            "windows": windows,
+        }

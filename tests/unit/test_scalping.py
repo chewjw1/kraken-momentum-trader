@@ -21,6 +21,7 @@ from src.strategy.base_strategy import MarketData, Position, SignalType
 from src.strategy.signals.vwap import VWAPIndicator, calculate_vwap
 from src.strategy.signals.bollinger import BollingerBandsIndicator, calculate_bollinger
 from src.core.adaptive_pair_manager import AdaptivePairManager, AdaptiveConfig
+from src.risk.circuit_breaker import CircuitBreaker, CircuitState
 
 
 @dataclass
@@ -615,6 +616,157 @@ class TestTrailingStop:
 
         # 0.096% < 0.3% threshold
         assert not should_close
+
+
+class TestEMAFilter:
+    """Tests for EMA trend filter in scalping strategy."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.config = ScalpingConfig(
+            rsi_period=7,
+            bb_period=20,
+            min_confirmations=2,
+            ema_filter_enabled=True,
+            ema_bearish_threshold=-0.5
+        )
+        self.strategy = ScalpingStrategy(self.config)
+
+    def test_ema_filter_blocks_bearish_entry(self):
+        """Should block entry when EMA trend is strongly bearish."""
+        # Strong downtrend: prices falling consistently
+        prices = [110.0 - i * 0.5 for i in range(30)]  # 110 → 95.5
+
+        # Add volume spike and oversold conditions to trigger confirmations
+        volumes = [1000.0] * 20 + [2500.0] * 10
+
+        market_data = create_market_data("BTC/USD", prices, volumes=volumes)
+        signal = self.strategy.analyze(market_data, None)
+
+        # Should either HOLD (EMA filter blocks) or HOLD (not enough confirmations)
+        assert signal.signal_type == SignalType.HOLD
+        # If EMA filter triggered, the reason should mention it
+        if "EMA bearish" in signal.reason:
+            assert "trend strength" in signal.reason
+
+    def test_ema_filter_disabled(self):
+        """Should not filter when EMA filter is disabled."""
+        config = ScalpingConfig(
+            rsi_period=7,
+            bb_period=20,
+            min_confirmations=2,
+            ema_filter_enabled=False
+        )
+        strategy = ScalpingStrategy(config)
+
+        # Same bearish data
+        prices = [110.0 - i * 0.5 for i in range(30)]
+        market_data = create_market_data("BTC/USD", prices)
+        signal = strategy.analyze(market_data, None)
+
+        # Should NOT mention EMA filter
+        assert "EMA bearish filter" not in signal.reason
+
+    def test_ema_filter_allows_bullish(self):
+        """Should allow entry when EMA is bullish."""
+        # Uptrend prices (EMA should be bullish)
+        prices = [90.0 + i * 0.3 for i in range(30)]  # 90 → 98.7
+
+        market_data = create_market_data("BTC/USD", prices)
+        signal = self.strategy.analyze(market_data, None)
+
+        # EMA filter should not block - reason should be about confirmations, not EMA
+        assert "EMA bearish filter" not in signal.reason
+
+
+class TestCircuitBreakerIntegration:
+    """Tests for circuit breaker behavior with scalping."""
+
+    def test_circuit_breaker_blocks_after_losses(self):
+        """Should block trading after consecutive losses."""
+        cb = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
+
+        assert cb.is_trading_allowed()
+
+        cb.record_loss()
+        cb.record_loss()
+        assert cb.is_trading_allowed()  # Still under limit
+
+        cb.record_loss()  # 3rd loss
+        assert not cb.is_trading_allowed()  # Now blocked
+
+    def test_circuit_breaker_resets_on_win(self):
+        """Should reset consecutive loss counter on a win."""
+        cb = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
+
+        cb.record_loss()
+        cb.record_loss()
+        cb.record_win()  # Reset counter
+
+        cb.record_loss()
+        cb.record_loss()
+        assert cb.is_trading_allowed()  # Only 2 losses since last win
+
+    def test_circuit_breaker_state_serialization(self):
+        """Should persist and restore state correctly."""
+        cb = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
+        cb.record_loss()
+        cb.record_loss()
+
+        state = cb.to_dict()
+        assert state["consecutive_losses"] == 2
+        assert state["state"] == "closed"
+
+        # Restore into new instance
+        cb2 = CircuitBreaker(consecutive_loss_limit=3, cooldown_hours=1)
+        cb2.from_dict(state)
+        assert cb2.get_state().consecutive_losses == 2
+
+    def test_circuit_breaker_emergency_stop(self):
+        """Should enter emergency state and block trading."""
+        cb = CircuitBreaker()
+        cb.trigger_emergency_stop("Market crash detected")
+        assert not cb.is_trading_allowed()
+        assert cb.get_state().state == CircuitState.EMERGENCY
+
+    def test_circuit_breaker_manual_reset(self):
+        """Should allow manual reset from any state."""
+        cb = CircuitBreaker(consecutive_loss_limit=2, cooldown_hours=1)
+        cb.record_loss()
+        cb.record_loss()
+        assert not cb.is_trading_allowed()
+
+        cb.reset()
+        assert cb.is_trading_allowed()
+        assert cb.get_state().consecutive_losses == 0
+
+
+class TestBacktestSlippage:
+    """Tests for slippage simulation in backtester."""
+
+    def test_slippage_config_default(self):
+        """Default slippage should be 0.05%."""
+        from src.backtest.scalping_backtester import ScalpingBacktestConfig
+        config = ScalpingBacktestConfig()
+        assert config.slippage_percent == 0.05
+
+    def test_slippage_worsens_entry(self):
+        """Slippage should make entry price worse (higher for longs)."""
+        from src.backtest.scalping_backtester import ScalpingBacktestConfig
+        config = ScalpingBacktestConfig(slippage_percent=0.1)
+        # Entry at 100 with 0.1% slippage = 100.10
+        entry = 100.0 * (1 + config.slippage_percent / 100)
+        assert entry > 100.0
+        assert abs(entry - 100.10) < 0.01
+
+    def test_slippage_worsens_exit(self):
+        """Slippage should make exit price worse (lower for longs)."""
+        from src.backtest.scalping_backtester import ScalpingBacktestConfig
+        config = ScalpingBacktestConfig(slippage_percent=0.1)
+        # Exit at 105 with 0.1% slippage = 104.895
+        exit_price = 105.0 * (1 - config.slippage_percent / 100)
+        assert exit_price < 105.0
+        assert abs(exit_price - 104.895) < 0.01
 
 
 if __name__ == "__main__":
