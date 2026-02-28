@@ -143,6 +143,9 @@ class ScalpingTrader:
         # Fee rate depends on order type
         self.fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if self.use_maker_orders else self.config.get('fees', {}).get('taker_percent', 0.26)
 
+        # Candle interval from config (default 60 for backward compatibility)
+        self.candle_interval = self.config.get('strategy', {}).get('candle_interval', 60)
+
         # Metrics
         self.metrics = {
             'total_trades': 0,
@@ -166,6 +169,7 @@ class ScalpingTrader:
             "Scalping trader initialized",
             pairs=self.pairs,
             paper_trading=paper_trading,
+            candle_interval=f"{self.candle_interval}m",
             take_profit=default_config.take_profit_percent,
             stop_loss=default_config.stop_loss_percent,
             use_maker_orders=self.use_maker_orders,
@@ -258,7 +262,7 @@ class ScalpingTrader:
     def _get_market_data(self, pair: str) -> Optional[MarketData]:
         """Fetch market data for a pair."""
         try:
-            ohlc = self.client.get_ohlc(pair, interval=60)  # 60-min candles
+            ohlc = self.client.get_ohlc(pair, interval=self.candle_interval)
             if not ohlc or len(ohlc) < 25:
                 return None
 
@@ -284,7 +288,7 @@ class ScalpingTrader:
         # Use BTC as regime reference (largest, most liquid)
         reference_pair = "BTC/USD"
         try:
-            ohlc = self.client.get_ohlc(reference_pair, interval=60)
+            ohlc = self.client.get_ohlc(reference_pair, interval=self.candle_interval)
             if not ohlc or len(ohlc) < 200:
                 return  # Not enough data yet
         except Exception as e:

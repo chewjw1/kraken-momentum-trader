@@ -1,100 +1,168 @@
 # Scalping Strategy Configuration
-# Optimized with MAKER ORDERS for 0.32% round-trip fees (vs 0.52% taker)
+# Re-optimized 2026-02-28 using 90 days of 4h Kraken data (Nov 2025 - Feb 2026)
+# Scoring: composite of returns (40%), Sharpe (30%), profit factor (20%), minus drawdown & trade penalty
 #
-# Optimization Results (118 days, Oct 2025 - Jan 2026):
-#   BTC/USD: 58.8% win rate, +2.90% return, PF 1.54
-#   SOL/USD: 60.0% win rate, +1.29% return, PF 1.08
-#   XRP/USD: 50.0% win rate, +3.00% return, PF 1.29
-#   ETH/USD: 41.7% win rate, -2.59% return (EXCLUDED)
+# Optimization Results (90 days, 4h candles, 100 trials/pair):
+#   BTC/USD:  +0.68% return, 60.0% win rate, PF 1.22, 15 trades  (VIABLE)
+#   LINK/USD: +2.45% return, 80.0% win rate, PF 2.36, 10 trades  (VIABLE)
+#   AVAX/USD: +3.33% return, 60.0% win rate, PF 1.89, 10 trades  (VIABLE)
+#   XRP/USD:  +1.01% return, 50.0% win rate, PF 1.27, 10 trades  (MARGINAL)
+#   ETH/USD:  +2.45% return, 100% win rate,  2 trades only        (LOW DATA)
+#   SOL/USD:  -1.82% return, 45.5% win rate, PF 0.77, 22 trades  (NOT VIABLE)
+#   DOGE/USD: -0.93% return, 25.0% win rate, PF 0.92, 28 trades  (NOT VIABLE)
+#   ADA/USD:  -0.94% return, 26.1% win rate, PF 0.91, 23 trades  (NOT VIABLE)
 #
 # Strategy: Multi-indicator confirmation with VWAP, Bollinger Bands, RSI, Volume
-# Entry: Buy when 3+ signals confirm oversold conditions (higher quality)
-# Exit: Take profit at 5%, stop loss at 2-3%, or indicator reversal
+# Entry: Buy when 2-3 signals confirm oversold conditions
+# Exit: Take profit at optimized %, stop loss at optimized %, or indicator reversal
 
 strategy:
   name: "scalping"
 
-  # Default parameters (used when per-pair not specified)
-  take_profit_percent: 5.0   # Wider target for maker order fills
-  stop_loss_percent: 2.5     # 2:1 risk-reward
-  candle_interval: 60
-  min_confirmations: 3       # Higher quality trades
+  # Default parameters (fallback when per-pair not specified)
+  # Conservative defaults: tighter TP, wider SL, higher confirmations
+  take_profit_percent: 3.0    # Reduced from 5.0 — smaller, more achievable targets
+  stop_loss_percent: 2.0      # Wider relative to TP — more breathing room
+  candle_interval: 240        # 4-hour candles — less noise, better signal quality
+  min_confirmations: 3        # High quality trades only
 
-# Indicator settings (defaults)
+# Indicator settings (defaults — overridden by per-pair params)
 indicators:
   rsi:
-    period: 13
-    oversold: 25.0
-    overbought: 70.0
+    period: 10
+    oversold: 30.0
+    overbought: 65.0
 
   bollinger:
-    period: 20
+    period: 25
     std_dev: 2.0
     squeeze_threshold: 3.0
 
   vwap:
-    threshold_percent: 0.7
+    threshold_percent: 0.5
 
   volume:
     spike_threshold: 1.75
 
-# Trading pairs - ALL pairs enabled, adaptive manager will disable losers
+# Trading pairs — ordered by optimization confidence
+# Viable pairs first, marginal/unproven next, weak pairs last
 pairs:
-  - BTC/USD    # Optimized: +2.90% return, 58.8% win rate
-  - ETH/USD    # May underperform - adaptive manager will disable if needed
-  - SOL/USD    # Optimized: +1.29% return, 60.0% win rate
-  - XRP/USD    # Optimized: +3.00% return, 50.0% win rate
-  - DOGE/USD   # Adaptive manager will evaluate
-  - ADA/USD    # Adaptive manager will evaluate
-  - LINK/USD   # Adaptive manager will evaluate
-  - AVAX/USD   # Adaptive manager will evaluate
+  - BTC/USD    # VIABLE:  +0.68%, 60% WR, 15 trades
+  - LINK/USD   # VIABLE:  +2.45%, 80% WR, 10 trades
+  - AVAX/USD   # VIABLE:  +3.33%, 60% WR, 10 trades
+  - XRP/USD    # MARGINAL: +1.01%, 50% WR, 10 trades
+  - ETH/USD    # LOW DATA: +2.45%, 2 trades only — adaptive manager will evaluate
+  - SOL/USD    # WEAK: -1.82%, 45.5% WR — adaptive manager should disable
+  - ADA/USD    # WEAK: -0.94%, 26.1% WR — adaptive manager should disable
+  - DOGE/USD   # WEAK: -0.93%, 25% WR — adaptive manager should disable
 
-# Per-pair optimized parameters (from run_scalping_optimizer.py)
+# Per-pair optimized parameters (from run_scalping_optimizer.py, 2026-02-28)
+# Each pair was independently optimized with 100 Bayesian trials
 pair_parameters:
   BTC/USD:
-    take_profit_percent: 5.0
-    stop_loss_percent: 3.0
-    rsi_period: 13
-    rsi_oversold: 25
-    rsi_overbought: 65
-    bb_period: 10
+    take_profit_percent: 2.0
+    stop_loss_percent: 1.0
+    rsi_period: 8
+    rsi_oversold: 20
+    rsi_overbought: 60
+    bb_period: 25
     bb_std_dev: 2.0
-    vwap_threshold_percent: 0.8
-    volume_spike_threshold: 1.75
+    vwap_threshold_percent: 0.3
+    volume_spike_threshold: 1.5
+    min_confirmations: 2
+
+  ETH/USD:
+    take_profit_percent: 3.0
+    stop_loss_percent: 1.0
+    rsi_period: 13
+    rsi_oversold: 40
+    rsi_overbought: 75
+    bb_period: 25
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.2
+    volume_spike_threshold: 2.25
     min_confirmations: 3
 
   SOL/USD:
-    take_profit_percent: 4.0
-    stop_loss_percent: 3.5
+    take_profit_percent: 3.0
+    stop_loss_percent: 1.0
     rsi_period: 6
-    rsi_oversold: 25
-    rsi_overbought: 80
+    rsi_oversold: 40
+    rsi_overbought: 60
     bb_period: 15
-    bb_std_dev: 2.0
-    vwap_threshold_percent: 0.7
+    bb_std_dev: 2.25
+    vwap_threshold_percent: 0.1
     volume_spike_threshold: 1.25
-    min_confirmations: 4
+    min_confirmations: 2
 
   XRP/USD:
     take_profit_percent: 5.0
     stop_loss_percent: 2.0
-    rsi_period: 13
-    rsi_oversold: 20
-    rsi_overbought: 70
-    bb_period: 25
-    bb_std_dev: 2.25
-    vwap_threshold_percent: 0.7
-    volume_spike_threshold: 2.5
-    min_confirmations: 3
+    rsi_period: 5
+    rsi_oversold: 30
+    rsi_overbought: 65
+    bb_period: 20
+    bb_std_dev: 1.75
+    vwap_threshold_percent: 0.3
+    volume_spike_threshold: 2.25
+    min_confirmations: 2
 
-# Adaptive pair management
+  DOGE/USD:
+    take_profit_percent: 6.5
+    stop_loss_percent: 1.5
+    rsi_period: 5
+    rsi_oversold: 25
+    rsi_overbought: 65
+    bb_period: 30
+    bb_std_dev: 1.75
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 2.25
+    min_confirmations: 1
+
+  ADA/USD:
+    take_profit_percent: 8.0
+    stop_loss_percent: 1.5
+    rsi_period: 6
+    rsi_oversold: 30
+    rsi_overbought: 65
+    bb_period: 30
+    bb_std_dev: 2.5
+    vwap_threshold_percent: 0.5
+    volume_spike_threshold: 2.5
+    min_confirmations: 1
+
+  LINK/USD:
+    take_profit_percent: 2.0
+    stop_loss_percent: 1.5
+    rsi_period: 8
+    rsi_oversold: 30
+    rsi_overbought: 60
+    bb_period: 30
+    bb_std_dev: 1.75
+    vwap_threshold_percent: 0.8
+    volume_spike_threshold: 1.25
+    min_confirmations: 2
+
+  AVAX/USD:
+    take_profit_percent: 5.5
+    stop_loss_percent: 2.5
+    rsi_period: 8
+    rsi_oversold: 20
+    rsi_overbought: 75
+    bb_period: 30
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.2
+    volume_spike_threshold: 1.5
+    min_confirmations: 2
+
+# Adaptive pair management — tighter thresholds for faster disabling
 adaptive:
   enabled: true
-  min_win_rate: 0.40          # Disable pair if win rate < 40%
-  min_profit_factor: 0.9      # Disable pair if PF < 0.9
-  max_consecutive_losses: 4   # Disable after 4 consecutive losses
+  min_win_rate: 0.35           # Disable pair if win rate < 35%
+  min_profit_factor: 0.85      # Disable pair if PF < 0.85
+  max_consecutive_losses: 3    # Disable after 3 consecutive losses (was 4)
   cooldown_hours: 2.0
-  reenable_win_rate: 0.50     # Re-enable if simulated WR > 50%
+  reenable_win_rate: 0.50      # Re-enable if simulated WR > 50%
 
 # Position sizing
 # initial_capital: auto-fetched from Kraken account on first start.
@@ -121,9 +189,9 @@ execution:
 circuit_breaker:
   global_max_drawdown_pct: 5.0  # Halt ALL trading if account down 5% from peak
   cooldown_hours: 4             # Wait 4 hours before resuming
-  pair_max_drawdown_pct: 3.0    # Pause single pair if down 3% of capital
+  pair_max_drawdown_pct: 2.0    # Pause single pair if down 2% of capital (was 3%)
   pair_cooldown_hours: 2.0      # Per-pair cooldown
-  consecutive_loss_limit: 5     # Secondary: pause after 5 consecutive losses
+  consecutive_loss_limit: 4     # Secondary: pause after 4 consecutive losses (was 5)
 
 # Regime detector - auto-classifies bull/bear/sideways
 # Adjusts TP/SL, position size, confirmations, and EMA filter per regime
@@ -141,4 +209,4 @@ ema_filter:
 
 # Trading loop settings
 trading:
-  check_interval_seconds: 60
+  check_interval_seconds: 120   # Check every 2 min (was 60) — 4h candles don't need faster

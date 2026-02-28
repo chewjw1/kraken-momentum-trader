@@ -252,16 +252,23 @@ class ScalpingBacktestRunner:
             dd = (peak - running) / peak * 100
             max_dd = max(max_dd, dd)
 
-        # Composite score (same formula as momentum optimizer)
-        # Penalize too few trades
-        trade_penalty = 0 if len(trades) >= 20 else (20 - len(trades)) * 0.5
+        # Cap profit factor to prevent single-win results from dominating
+        profit_factor_capped = min(profit_factor, 5.0) if profit_factor != float("inf") else 5.0
+
+        # Composite score with robust trade count penalty
+        # Minimum 10 trades for any meaningful score; heavy penalty below that
+        min_trades = 10
+        if len(trades) < min_trades:
+            trade_penalty = (min_trades - len(trades)) * 3.0  # Much steeper penalty
+        else:
+            trade_penalty = 0
 
         score = (
-            total_return * 100 * 0.4 +  # Weight returns
-            sharpe * 10 * 0.3 +          # Weight risk-adjusted returns
-            profit_factor * 5 * 0.2 -    # Weight consistency
-            max_dd * 0.1 -               # Penalize drawdown
-            trade_penalty                # Penalize too few trades
+            total_return * 100 * 0.4 +        # Weight returns
+            sharpe * 10 * 0.3 +                # Weight risk-adjusted returns
+            profit_factor_capped * 5 * 0.2 -   # Weight consistency (capped at 5)
+            max_dd * 0.1 -                     # Penalize drawdown
+            trade_penalty                      # Penalize too few trades
         )
 
         return {
@@ -272,7 +279,7 @@ class ScalpingBacktestRunner:
             "total_return": total_return,
             "total_pnl_percent": total_pnl_pct,
             "avg_pnl_percent": avg_pnl_pct,
-            "profit_factor": profit_factor if profit_factor != float("inf") else 999.0,
+            "profit_factor": min(profit_factor, 999.0),
             "sharpe_ratio": sharpe,
             "max_drawdown_percent": max_dd,
             "score": score,
