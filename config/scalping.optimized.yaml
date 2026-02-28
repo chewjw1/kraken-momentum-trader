@@ -1,5 +1,5 @@
 _optimization:
-  generated_at: '2026-02-28T12:38:02.818389+00:00'
+  generated_at: '2026-02-28T12:50:27.262030+00:00'
   study_name: scalping_optimization
   period_days: 90
 pair_parameters:
@@ -36,37 +36,37 @@ pair_parameters:
       win_rate: 100.0
       trades: 2
   SOL/USD:
-    take_profit_percent: 3.0
+    take_profit_percent: 2.0
     stop_loss_percent: 1.0
-    rsi_period: 6
+    rsi_period: 14
     rsi_oversold: 40
-    rsi_overbought: 60
+    rsi_overbought: 70
     bb_period: 15
     bb_std_dev: 2.25
     vwap_threshold_percent: 0.1
     volume_spike_threshold: 1.25
     min_confirmations: 2
     _metrics:
-      score: -0.7345481023670763
-      return: -0.018248137028140446
-      win_rate: 45.45454545454545
-      trades: 22
+      score: -0.49793436040218975
+      return: -0.012432212687215543
+      win_rate: 43.75
+      trades: 16
   XRP/USD:
-    take_profit_percent: 5.0
-    stop_loss_percent: 2.0
-    rsi_period: 5
-    rsi_oversold: 30
-    rsi_overbought: 65
-    bb_period: 20
-    bb_std_dev: 1.75
-    vwap_threshold_percent: 0.30000000000000004
-    volume_spike_threshold: 2.25
-    min_confirmations: 2
+    take_profit_percent: 6.5
+    stop_loss_percent: 4.0
+    rsi_period: 7
+    rsi_oversold: 25
+    rsi_overbought: 70
+    bb_period: 15
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.4
+    volume_spike_threshold: 2.0
+    min_confirmations: 4
     _metrics:
-      score: 1.8196686139436906
-      return: 0.010136588519036194
-      win_rate: 50.0
-      trades: 10
+      score: 11.77660493772916
+      return: 0.019415123443229095
+      win_rate: 100.0
+      trades: 2
   DOGE/USD:
     take_profit_percent: 6.5
     stop_loss_percent: 1.5
@@ -100,20 +100,20 @@ pair_parameters:
       win_rate: 26.08695652173913
       trades: 23
   LINK/USD:
-    take_profit_percent: 2.0
-    stop_loss_percent: 1.5
-    rsi_period: 8
-    rsi_oversold: 30
+    take_profit_percent: 8.0
+    stop_loss_percent: 1.0
+    rsi_period: 12
+    rsi_oversold: 35
     rsi_overbought: 60
     bb_period: 30
     bb_std_dev: 1.75
-    vwap_threshold_percent: 0.8
-    volume_spike_threshold: 1.25
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 1.0
     min_confirmations: 2
     _metrics:
-      score: 4.3165989244395515
-      return: 0.024507664280459904
-      win_rate: 80.0
+      score: 5.144285239807736
+      return: 0.04110170138591438
+      win_rate: 50.0
       trades: 10
   AVAX/USD:
     take_profit_percent: 5.5

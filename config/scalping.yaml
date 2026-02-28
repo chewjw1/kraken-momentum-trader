@@ -132,15 +132,15 @@ pair_parameters:
     min_confirmations: 1
 
   LINK/USD:
-    take_profit_percent: 2.0
-    stop_loss_percent: 1.5
-    rsi_period: 8
-    rsi_oversold: 30
+    take_profit_percent: 8.0
+    stop_loss_percent: 1.0
+    rsi_period: 12
+    rsi_oversold: 35
     rsi_overbought: 60
     bb_period: 30
     bb_std_dev: 1.75
-    vwap_threshold_percent: 0.8
-    volume_spike_threshold: 1.25
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 1.0
     min_confirmations: 2
 
   AVAX/USD:
