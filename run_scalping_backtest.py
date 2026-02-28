@@ -32,6 +32,8 @@ DEFAULT_PAIRS = [
     "DOT/USD",
     "LINK/USD",
     "MATIC/USD",
+    "ATOM/USD",
+    "NEAR/USD",
 ]
 
 

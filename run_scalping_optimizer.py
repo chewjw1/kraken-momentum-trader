@@ -48,8 +48,8 @@ logger = get_logger(__name__)
 @dataclass
 class ScalpingOptimizerConfig:
     """Configuration for scalping optimizer."""
-    n_trials: int = 50
-    timeout_seconds: int = 3600
+    n_trials: int = 100
+    timeout_seconds: int = 7200
     pairs: List[str] = None
     start_date: datetime = None
     end_date: datetime = None
@@ -58,8 +58,9 @@ class ScalpingOptimizerConfig:
     fee_percent: float = 0.16  # Maker fee (use limit orders)
     position_size_percent: float = 20.0
     storage_path: str = "data/optimization/scalping_study.db"
-    study_name: str = "scalping_optimization"
+    study_name: str = "scalping_optimization_v2"
     cache_dir: str = "data/cache/ccxt"
+    recency_weight: float = 2.0  # Weight multiplier for recent data
 
     def __post_init__(self):
         if self.pairs is None:
@@ -67,15 +68,15 @@ class ScalpingOptimizerConfig:
         if self.end_date is None:
             self.end_date = datetime.now(timezone.utc)
         if self.start_date is None:
-            self.start_date = self.end_date - timedelta(days=90)
+            self.start_date = self.end_date - timedelta(days=180)  # 6 months default
 
 
 # Scalping parameter ranges for optimization
 SCALPING_PARAMETER_RANGES = {
-    # Take profit (main target)
-    "take_profit_percent": {"low": 2.0, "high": 8.0, "step": 0.5},
-    # Stop loss
-    "stop_loss_percent": {"low": 1.0, "high": 4.0, "step": 0.5},
+    # Take profit (main target) - used as fallback when ATR not available
+    "take_profit_percent": {"low": 1.5, "high": 10.0, "step": 0.5},
+    # Stop loss - used as fallback when ATR not available
+    "stop_loss_percent": {"low": 0.5, "high": 4.0, "step": 0.5},
     # RSI settings
     "rsi_period": {"low": 5, "high": 14, "step": 1, "type": "int"},
     "rsi_oversold": {"low": 20, "high": 40, "step": 5, "type": "int"},
@@ -89,6 +90,16 @@ SCALPING_PARAMETER_RANGES = {
     "volume_spike_threshold": {"low": 1.0, "high": 2.5, "step": 0.25},
     # Confirmations required
     "min_confirmations": {"low": 1, "high": 4, "step": 1, "type": "int"},
+    # Stochastic Oscillator
+    "stoch_k_period": {"low": 5, "high": 21, "step": 2, "type": "int"},
+    "stoch_oversold": {"low": 15, "high": 30, "step": 5, "type": "int"},
+    "stoch_overbought": {"low": 70, "high": 85, "step": 5, "type": "int"},
+    # ATR-based dynamic stops
+    "atr_period": {"low": 10, "high": 20, "step": 2, "type": "int"},
+    "atr_stop_multiplier": {"low": 1.0, "high": 3.0, "step": 0.25},
+    "atr_tp_multiplier": {"low": 1.5, "high": 4.0, "step": 0.25},
+    # Short selling
+    "short_min_confirmations": {"low": 2, "high": 4, "step": 1, "type": "int"},
 }
 
 
@@ -130,6 +141,19 @@ class ScalpingBacktestRunner:
             volume_spike_threshold=params.get("volume_spike_threshold", 1.5),
             min_confirmations=params.get("min_confirmations", 2),
             fee_percent=self.fee_percent,
+            # New indicator params
+            stoch_k_period=params.get("stoch_k_period", 14),
+            stoch_oversold=params.get("stoch_oversold", 20.0),
+            stoch_overbought=params.get("stoch_overbought", 80.0),
+            macd_fast=params.get("macd_fast", 12),
+            macd_slow=params.get("macd_slow", 26),
+            macd_signal=params.get("macd_signal", 9),
+            atr_period=params.get("atr_period", 14),
+            atr_stop_multiplier=params.get("atr_stop_multiplier", 1.5),
+            atr_tp_multiplier=params.get("atr_tp_multiplier", 2.0),
+            use_atr_stops=params.get("use_atr_stops", True),
+            shorting_enabled=params.get("shorting_enabled", True),
+            short_min_confirmations=params.get("short_min_confirmations", 3),
         )
 
         strategy = ScalpingStrategy(config)
@@ -143,8 +167,9 @@ class ScalpingBacktestRunner:
         entry_price = 0.0
         entry_time = None
         position_size_usd = 0.0
+        position_side = "long"
 
-        lookback = max(config.bb_period, config.rsi_period) + 5
+        lookback = max(config.bb_period, config.rsi_period, config.macd_slow + config.macd_signal, config.atr_period) + 5
 
         for i in range(lookback, len(candles)):
             window = candles[i - lookback:i + 1]
@@ -161,7 +186,7 @@ class ScalpingBacktestRunner:
             if in_position:
                 position = Position(
                     pair=pair,
-                    side="long",
+                    side=position_side,
                     entry_price=entry_price,
                     current_price=current.close,
                     size=position_size_usd / entry_price,
@@ -170,10 +195,18 @@ class ScalpingBacktestRunner:
 
                 signal = strategy.analyze(market_data, position)
 
-                if signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG):
-                    # Exit
+                should_exit = False
+                if position_side == "long":
+                    should_exit = signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG)
+                elif position_side == "short":
+                    should_exit = signal.signal_type == SignalType.CLOSE_SHORT
+
+                if should_exit:
                     exit_price = current.close
-                    gross_pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+                    if position_side == "short":
+                        gross_pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+                    else:
+                        gross_pnl_pct = ((exit_price - entry_price) / entry_price) * 100
                     net_pnl_pct = gross_pnl_pct - (self.fee_percent * 2)
                     pnl_usd = position_size_usd * (net_pnl_pct / 100)
 
@@ -185,7 +218,8 @@ class ScalpingBacktestRunner:
                         "exit_price": exit_price,
                         "pnl_percent": net_pnl_pct,
                         "pnl_usd": pnl_usd,
-                        "win": pnl_usd > 0
+                        "win": pnl_usd > 0,
+                        "side": position_side,
                     })
 
                     in_position = False
@@ -196,13 +230,35 @@ class ScalpingBacktestRunner:
                     entry_price = current.close
                     entry_time = current.timestamp
                     position_size_usd = capital * (self.position_size_percent / 100)
+                    position_side = "long"
+                    in_position = True
+                elif signal.signal_type == SignalType.SELL_SHORT:
+                    entry_price = current.close
+                    entry_time = current.timestamp
+                    position_size_usd = capital * (self.position_size_percent / 100)
+                    position_side = "short"
                     in_position = True
 
         # Calculate metrics
         return self._calculate_metrics(trades, capital)
 
-    def _calculate_metrics(self, trades: List[dict], final_capital: float) -> Dict[str, Any]:
-        """Calculate performance metrics from trades."""
+    def _calculate_metrics(
+        self,
+        trades: List[dict],
+        final_capital: float,
+        recency_weight: float = 2.0
+    ) -> Dict[str, Any]:
+        """
+        Calculate performance metrics from trades with recency weighting.
+
+        Recent trades get higher weight in the score, since recent market
+        conditions are more likely to represent future conditions.
+
+        Args:
+            trades: List of trade dictionaries.
+            final_capital: Final capital after all trades.
+            recency_weight: Multiplier for recent data (2.0 = recent half counts 2x).
+        """
         if not trades:
             return {
                 "total_trades": 0,
@@ -216,11 +272,19 @@ class ScalpingBacktestRunner:
                 "sharpe_ratio": 0.0,
                 "max_drawdown_percent": 0.0,
                 "score": float("-inf"),
+                "recent_win_rate": 0.0,
+                "recent_return": 0.0,
+                "long_trades": 0,
+                "short_trades": 0,
             }
 
         wins = sum(1 for t in trades if t["win"])
         losses = len(trades) - wins
         win_rate = wins / len(trades) if trades else 0
+
+        # Count long vs short trades
+        long_trades = sum(1 for t in trades if t.get("side", "long") == "long")
+        short_trades = sum(1 for t in trades if t.get("side", "long") == "short")
 
         total_pnl_pct = sum(t["pnl_percent"] for t in trades)
         avg_pnl_pct = total_pnl_pct / len(trades)
@@ -252,23 +316,44 @@ class ScalpingBacktestRunner:
             dd = (peak - running) / peak * 100
             max_dd = max(max_dd, dd)
 
+        # === RECENCY WEIGHTING ===
+        # Split trades into halves: older vs recent
+        midpoint = len(trades) // 2
+        recent_trades = trades[midpoint:]
+        recent_wins = sum(1 for t in recent_trades if t["win"])
+        recent_win_rate = recent_wins / len(recent_trades) if recent_trades else 0
+        recent_pnl = sum(t["pnl_percent"] for t in recent_trades)
+        recent_return = recent_pnl / len(recent_trades) if recent_trades else 0
+
         # Cap profit factor to prevent single-win results from dominating
         profit_factor_capped = min(profit_factor, 5.0) if profit_factor != float("inf") else 5.0
 
         # Composite score with robust trade count penalty
-        # Minimum 10 trades for any meaningful score; heavy penalty below that
         min_trades = 10
         if len(trades) < min_trades:
-            trade_penalty = (min_trades - len(trades)) * 3.0  # Much steeper penalty
+            trade_penalty = (min_trades - len(trades)) * 3.0
         else:
             trade_penalty = 0
 
+        # Base score components
+        return_score = total_return * 100 * 0.3
+        sharpe_score = sharpe * 10 * 0.2
+        pf_score = profit_factor_capped * 5 * 0.15
+        dd_penalty = max_dd * 0.1
+
+        # Recency-weighted component: recent performance counts more
+        recent_score = (
+            recent_return * recency_weight * 0.2 +   # Recent avg return weighted
+            recent_win_rate * 100 * 0.15              # Recent win rate
+        )
+
         score = (
-            total_return * 100 * 0.4 +        # Weight returns
-            sharpe * 10 * 0.3 +                # Weight risk-adjusted returns
-            profit_factor_capped * 5 * 0.2 -   # Weight consistency (capped at 5)
-            max_dd * 0.1 -                     # Penalize drawdown
-            trade_penalty                      # Penalize too few trades
+            return_score +
+            sharpe_score +
+            pf_score +
+            recent_score -
+            dd_penalty -
+            trade_penalty
         )
 
         return {
@@ -283,6 +368,10 @@ class ScalpingBacktestRunner:
             "sharpe_ratio": sharpe,
             "max_drawdown_percent": max_dd,
             "score": score,
+            "recent_win_rate": recent_win_rate * 100,
+            "recent_return": recent_return,
+            "long_trades": long_trades,
+            "short_trades": short_trades,
         }
 
 
@@ -418,6 +507,10 @@ class ScalpingOptimizer:
         trial.set_user_attr("sharpe_ratio", metrics["sharpe_ratio"])
         trial.set_user_attr("max_drawdown", metrics["max_drawdown_percent"])
         trial.set_user_attr("profit_factor", metrics["profit_factor"])
+        trial.set_user_attr("recent_win_rate", metrics.get("recent_win_rate", 0))
+        trial.set_user_attr("recent_return", metrics.get("recent_return", 0))
+        trial.set_user_attr("long_trades", metrics.get("long_trades", 0))
+        trial.set_user_attr("short_trades", metrics.get("short_trades", 0))
 
         return metrics["score"]
 
@@ -508,12 +601,12 @@ class ScalpingOptimizer:
             print("No results available.")
             return
 
-        print(f"\n{'=' * 70}")
-        print("SCALPING OPTIMIZATION SUMMARY")
-        print(f"{'=' * 70}")
+        print(f"\n{'=' * 90}")
+        print("SCALPING OPTIMIZATION SUMMARY (v2 — with Stochastic, MACD, OBV, ATR, shorts)")
+        print(f"{'=' * 90}")
 
-        print(f"\n{'Pair':<12} {'Score':>10} {'Return':>10} {'Trades':>8} {'Win Rate':>10} {'PF':>8}")
-        print("-" * 60)
+        print(f"\n{'Pair':<12} {'Score':>8} {'Return':>8} {'Trades':>7} {'L/S':>7} {'WR':>7} {'RecentWR':>9} {'PF':>7}")
+        print("-" * 75)
 
         for pair, result in self._per_pair_results.items():
             score = result["score"]
@@ -522,15 +615,19 @@ class ScalpingOptimizer:
             trades = bt.user_attrs.get("total_trades", 0)
             wr = bt.user_attrs.get("win_rate", 0)
             pf = bt.user_attrs.get("profit_factor", 0)
+            recent_wr = bt.user_attrs.get("recent_win_rate", 0)
+            longs = bt.user_attrs.get("long_trades", trades)
+            shorts = bt.user_attrs.get("short_trades", 0)
 
-            print(f"{pair:<12} {score:>10.2f} {ret:>9.2f}% {trades:>8} {wr:>9.1f}% {pf:>8.2f}")
+            ls_str = f"{longs}/{shorts}"
+            print(f"{pair:<12} {score:>8.1f} {ret:>7.2f}% {trades:>7} {ls_str:>7} {wr:>6.1f}% {recent_wr:>8.1f}% {pf:>7.2f}")
 
-        print("-" * 60)
+        print("-" * 75)
 
         # Best parameters per pair
-        print(f"\n{'=' * 70}")
+        print(f"\n{'=' * 90}")
         print("BEST PARAMETERS BY PAIR")
-        print(f"{'=' * 70}")
+        print(f"{'=' * 90}")
 
         for pair, result in self._per_pair_results.items():
             params = result["params"]
@@ -542,6 +639,9 @@ class ScalpingOptimizer:
             print(f"  VWAP threshold: {params.get('vwap_threshold_percent', 0.3):.2f}%")
             print(f"  Volume spike: {params.get('volume_spike_threshold', 1.5):.2f}x")
             print(f"  Min confirmations: {params.get('min_confirmations', 2)}")
+            print(f"  Stochastic: period={params.get('stoch_k_period', 14)}, OS={params.get('stoch_oversold', 20)}, OB={params.get('stoch_overbought', 80)}")
+            print(f"  ATR: period={params.get('atr_period', 14)}, SL mult={params.get('atr_stop_multiplier', 1.5):.2f}, TP mult={params.get('atr_tp_multiplier', 2.0):.2f}")
+            print(f"  Short min confirmations: {params.get('short_min_confirmations', 3)}")
 
     def export_config(self, output_path: str = "config/scalping.optimized.yaml") -> str:
         """Export optimized parameters to YAML."""
@@ -561,6 +661,7 @@ class ScalpingOptimizer:
 
         for pair, result in self._per_pair_results.items():
             params = result["params"]
+            bt = result["best_trial"]
             config["pair_parameters"][pair] = {
                 "take_profit_percent": params.get("take_profit_percent", 4.5),
                 "stop_loss_percent": params.get("stop_loss_percent", 2.0),
@@ -572,11 +673,22 @@ class ScalpingOptimizer:
                 "vwap_threshold_percent": params.get("vwap_threshold_percent", 0.3),
                 "volume_spike_threshold": params.get("volume_spike_threshold", 1.5),
                 "min_confirmations": params.get("min_confirmations", 2),
+                # New indicator params
+                "stoch_k_period": params.get("stoch_k_period", 14),
+                "stoch_oversold": params.get("stoch_oversold", 20),
+                "stoch_overbought": params.get("stoch_overbought", 80),
+                "atr_period": params.get("atr_period", 14),
+                "atr_stop_multiplier": params.get("atr_stop_multiplier", 1.5),
+                "atr_tp_multiplier": params.get("atr_tp_multiplier", 2.0),
+                "short_min_confirmations": params.get("short_min_confirmations", 3),
                 "_metrics": {
                     "score": result["score"],
-                    "return": result["best_trial"].user_attrs.get("total_return", 0),
-                    "win_rate": result["best_trial"].user_attrs.get("win_rate", 0),
-                    "trades": result["best_trial"].user_attrs.get("total_trades", 0),
+                    "return": bt.user_attrs.get("total_return", 0),
+                    "win_rate": bt.user_attrs.get("win_rate", 0),
+                    "trades": bt.user_attrs.get("total_trades", 0),
+                    "recent_win_rate": bt.user_attrs.get("recent_win_rate", 0),
+                    "long_trades": bt.user_attrs.get("long_trades", 0),
+                    "short_trades": bt.user_attrs.get("short_trades", 0),
                 }
             }
 
@@ -846,11 +958,12 @@ def parse_args():
 
     parser.add_argument(
         "--pairs", nargs="+",
-        default=["BTC/USD", "ETH/USD", "SOL/USD"],
+        default=["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "LINK/USD",
+                 "AVAX/USD", "DOT/USD", "MATIC/USD", "ATOM/USD", "NEAR/USD"],
         help="Trading pairs to optimize"
     )
     parser.add_argument(
-        "--trials", "-n", type=int, default=50,
+        "--trials", "-n", type=int, default=100,
         help="Number of trials per pair"
     )
     parser.add_argument(
@@ -867,8 +980,8 @@ def parse_args():
         help="Candle interval in minutes (default: 60, 1440=daily)"
     )
     parser.add_argument(
-        "--days", type=int, default=90,
-        help="Days of historical data (default: 90, use 730 for 2 years)"
+        "--days", type=int, default=180,
+        help="Days of historical data (default: 180, use 365 for 1 year, 730 for 2 years)"
     )
     parser.add_argument(
         "--per-pair", action="store_true",

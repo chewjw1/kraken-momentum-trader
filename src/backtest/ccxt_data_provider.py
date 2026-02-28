@@ -30,6 +30,8 @@ KRAKEN_TO_YFINANCE = {
     "LTC/USD": "LTC-USD",
     "UNI/USD": "UNI-USD",
     "ATOM/USD": "ATOM-USD",
+    "NEAR/USD": "NEAR-USD",
+    "FIL/USD": "FIL-USD",
 }
 
 # Pair mapping from Kraken format to Binance format
@@ -47,6 +49,8 @@ KRAKEN_TO_BINANCE = {
     "LTC/USD": "LTC/USDT",
     "UNI/USD": "UNI/USDT",
     "ATOM/USD": "ATOM/USDT",
+    "NEAR/USD": "NEAR/USDT",
+    "FIL/USD": "FIL/USDT",
 }
 
 

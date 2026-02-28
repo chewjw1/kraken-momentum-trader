@@ -136,6 +136,7 @@ class ScalpingBacktester:
         entry_price = 0.0
         entry_time = None
         position_size_usd = 0.0
+        position_side = "long"
 
         # Process each candle
         for i in range(self.config.lookback_candles, len(candles)):
@@ -150,7 +151,7 @@ class ScalpingBacktester:
                 from ..strategy.base_strategy import Position
                 position = Position(
                     pair=pair,
-                    side="long",
+                    side=position_side,
                     entry_price=entry_price,
                     current_price=current.close,
                     size=position_size_usd / entry_price,
@@ -159,10 +160,17 @@ class ScalpingBacktester:
 
                 signal = self.strategy.analyze(market_data, position)
 
-                if signal.signal_type.value in ("sell", "close_long"):
+                exit_signals = ("sell", "close_long") if position_side == "long" else ("close_short",)
+                if signal.signal_type.value in exit_signals:
                     # Exit trade (apply slippage: worse exit price)
-                    exit_price = current.close * (1 - self.config.slippage_percent / 100)
-                    gross_pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+                    if position_side == "short":
+                        # Short exit: slippage makes cover price worse (higher)
+                        exit_price = current.close * (1 + self.config.slippage_percent / 100)
+                        gross_pnl_percent = ((entry_price - exit_price) / entry_price) * 100
+                    else:
+                        exit_price = current.close * (1 - self.config.slippage_percent / 100)
+                        gross_pnl_percent = ((exit_price - entry_price) / entry_price) * 100
+
                     fee_cost = self.config.fee_percent * 2  # Round trip
                     net_pnl_percent = gross_pnl_percent - fee_cost
                     pnl_usd = position_size_usd * (net_pnl_percent / 100)
@@ -190,14 +198,22 @@ class ScalpingBacktester:
                     entry_time = None
 
             else:
-                # Check entry conditions
+                # Check entry conditions (long and short)
                 signal = self.strategy.analyze(market_data, None)
 
                 if signal.signal_type.value == "buy":
-                    # Enter trade (apply slippage: worse entry price)
+                    # Long entry (apply slippage: worse entry price)
                     entry_price = current.close * (1 + self.config.slippage_percent / 100)
                     entry_time = current.timestamp
                     position_size_usd = capital * (self.config.position_size_percent / 100)
+                    position_side = "long"
+                    in_position = True
+                elif signal.signal_type.value == "sell_short":
+                    # Short entry (apply slippage: worse entry price for shorts = lower)
+                    entry_price = current.close * (1 - self.config.slippage_percent / 100)
+                    entry_time = current.timestamp
+                    position_size_usd = capital * (self.config.position_size_percent / 100)
+                    position_side = "short"
                     in_position = True
 
         # Calculate metrics

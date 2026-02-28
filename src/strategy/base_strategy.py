@@ -15,6 +15,7 @@ class SignalType(Enum):
     """Trading signal types."""
     BUY = "buy"
     SELL = "sell"
+    SELL_SHORT = "sell_short"  # Open a short position
     HOLD = "hold"
     CLOSE_LONG = "close_long"
     CLOSE_SHORT = "close_short"
@@ -34,7 +35,10 @@ class Signal:
     def is_actionable(self, min_strength: float = 0.5) -> bool:
         """Check if signal is strong enough to act on."""
         return (
-            self.signal_type in (SignalType.BUY, SignalType.SELL, SignalType.CLOSE_LONG, SignalType.CLOSE_SHORT)
+            self.signal_type in (
+                SignalType.BUY, SignalType.SELL, SignalType.SELL_SHORT,
+                SignalType.CLOSE_LONG, SignalType.CLOSE_SHORT
+            )
             and self.strength >= min_strength
         )
 

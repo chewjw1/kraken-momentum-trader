@@ -464,9 +464,23 @@ class Trader:
                 return
             self._enter_position(signal, market_data, pair_settings)
 
+        elif signal.signal_type == SignalType.SELL_SHORT:
+            if current_position:
+                logger.info("Already in position, ignoring short signal")
+                self.state_machine.analysis_complete(has_signal=False)
+                return
+            self._enter_position(signal, market_data, pair_settings, side="short")
+
         elif signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG):
             if not current_position:
                 logger.info("No position to close")
+                self.state_machine.analysis_complete(has_signal=False)
+                return
+            self._exit_position(signal, current_position, market_data)
+
+        elif signal.signal_type == SignalType.CLOSE_SHORT:
+            if not current_position:
+                logger.info("No short position to close")
                 self.state_machine.analysis_complete(has_signal=False)
                 return
             self._exit_position(signal, current_position, market_data)
@@ -478,7 +492,8 @@ class Trader:
         self,
         signal,
         market_data: MarketData,
-        pair_settings: Optional[PairSettings] = None
+        pair_settings: Optional[PairSettings] = None,
+        side: str = "long"
     ) -> None:
         """
         Enter a new position.
@@ -487,6 +502,7 @@ class Trader:
             signal: Entry signal.
             market_data: Current market data.
             pair_settings: Per-pair settings (optional, uses global if not provided).
+            side: Position side - "long" or "short".
         """
         pair = signal.pair
         price = signal.price
@@ -528,8 +544,9 @@ class Trader:
         position_size_usd = size_check.adjusted_size
         position_size_units = position_size_usd / price
 
+        order_side = OrderSide.SELL if side == "short" else OrderSide.BUY
         logger.info(
-            f"Entering position: BUY {position_size_units:.6f} {pair} @ {price:.2f}",
+            f"Entering {side} position: {order_side.value.upper()} {position_size_units:.6f} {pair} @ {price:.2f}",
             size_usd=position_size_usd,
             trailing_stop_activation=self.settings.risk.trailing_stop_activation_percent,
             trailing_stop_percent=self.settings.risk.trailing_stop_percent
@@ -541,15 +558,15 @@ class Trader:
             # Place order
             order = self.client.place_order(
                 pair=pair,
-                side=OrderSide.BUY,
+                side=order_side,
                 order_type=OrderType.MARKET,
                 volume=position_size_units
             )
 
-            # Update state (no stop_loss/take_profit - using trailing stop)
+            # Update state
             self.state_machine.open_position(
                 pair=pair,
-                side="long",
+                side=side,
                 entry_price=order.price or price,
                 size=position_size_units,
                 size_usd=position_size_usd,
@@ -564,7 +581,7 @@ class Trader:
             self.trade_logger.log_trade(
                 action="entry",
                 pair=pair,
-                side="buy",
+                side=side,
                 price=order.price or price,
                 amount=position_size_units,
                 order_id=order.order_id,
@@ -743,9 +760,14 @@ class Trader:
         pair = position.pair
         price = signal.price
         size = position.size
+        is_short = position.side == "short"
+
+        # For short exits, we BUY to cover; for long exits, we SELL
+        exit_order_side = OrderSide.BUY if is_short else OrderSide.SELL
+        exit_label = "BUY to cover" if is_short else "SELL"
 
         logger.info(
-            f"Exiting position: SELL {size:.6f} {pair} @ {price:.2f}",
+            f"Exiting {position.side} position: {exit_label} {size:.6f} {pair} @ {price:.2f}",
             reason=signal.reason
         )
 
@@ -755,16 +777,20 @@ class Trader:
             # Place exit order
             order = self.client.place_order(
                 pair=pair,
-                side=OrderSide.SELL,
+                side=exit_order_side,
                 order_type=OrderType.MARKET,
                 volume=size
             )
 
             exit_price = order.price or price
 
-            # Calculate P&L
-            pnl = (exit_price - position.entry_price) * size
-            pnl_percent = ((exit_price - position.entry_price) / position.entry_price) * 100
+            # Calculate P&L (inverted for shorts)
+            if is_short:
+                pnl = (position.entry_price - exit_price) * size
+                pnl_percent = ((position.entry_price - exit_price) / position.entry_price) * 100
+            else:
+                pnl = (exit_price - position.entry_price) * size
+                pnl_percent = ((exit_price - position.entry_price) / position.entry_price) * 100
 
             # Record trade result
             self.risk_manager.record_trade_result(pnl, pair)
