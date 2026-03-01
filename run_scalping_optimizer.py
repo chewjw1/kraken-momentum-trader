@@ -157,6 +157,11 @@ class ScalpingBacktestRunner:
         )
 
         strategy = ScalpingStrategy(config)
+        base_config = config  # Save for regime-adjusted rebuilds
+
+        # Regime detector for mid-backtest adaptation
+        regime_detector = RegimeDetector(RegimeConfig())
+        current_regime = MarketRegime.UNKNOWN
 
         # Run backtest
         capital = self.initial_capital
@@ -172,6 +177,49 @@ class ScalpingBacktestRunner:
         lookback = max(config.bb_period, config.rsi_period, config.macd_slow + config.macd_signal, config.atr_period) + 5
 
         for i in range(lookback, len(candles)):
+            # Detect regime every 50 candles and adjust strategy
+            if i % 50 == 0 and i >= 200:
+                all_candles_so_far = candles[:i + 1]
+                closes = [c.close for c in all_candles_so_far]
+                highs = [c.high for c in all_candles_so_far]
+                lows = [c.low for c in all_candles_so_far]
+                result = regime_detector.detect(closes, highs, lows)
+                if result.regime != current_regime:
+                    current_regime = result.regime
+                    adj = REGIME_ADJUSTMENTS.get(current_regime, REGIME_ADJUSTMENTS[MarketRegime.UNKNOWN])
+                    tp_mult = adj.get('take_profit_multiplier', 1.0)
+                    sl_mult = adj.get('stop_loss_multiplier', 1.0)
+                    conf_offset = adj.get('min_confirmations_offset', 0)
+                    ema_enabled = adj.get('ema_filter_enabled', True)
+                    adjusted_config = ScalpingConfig(
+                        take_profit_percent=base_config.take_profit_percent * tp_mult,
+                        stop_loss_percent=base_config.stop_loss_percent * sl_mult,
+                        rsi_period=base_config.rsi_period,
+                        rsi_oversold=base_config.rsi_oversold,
+                        rsi_overbought=base_config.rsi_overbought,
+                        bb_period=base_config.bb_period,
+                        bb_std_dev=base_config.bb_std_dev,
+                        vwap_threshold_percent=base_config.vwap_threshold_percent,
+                        volume_spike_threshold=base_config.volume_spike_threshold,
+                        min_confirmations=max(1, base_config.min_confirmations + conf_offset),
+                        fee_percent=base_config.fee_percent,
+                        ema_filter_enabled=ema_enabled,
+                        stoch_k_period=base_config.stoch_k_period,
+                        stoch_d_period=base_config.stoch_d_period,
+                        stoch_oversold=base_config.stoch_oversold,
+                        stoch_overbought=base_config.stoch_overbought,
+                        macd_fast=base_config.macd_fast,
+                        macd_slow=base_config.macd_slow,
+                        macd_signal=base_config.macd_signal,
+                        atr_period=base_config.atr_period,
+                        atr_stop_multiplier=base_config.atr_stop_multiplier,
+                        atr_tp_multiplier=base_config.atr_tp_multiplier,
+                        use_atr_stops=base_config.use_atr_stops,
+                        shorting_enabled=base_config.shorting_enabled,
+                        short_min_confirmations=base_config.short_min_confirmations,
+                    )
+                    strategy = ScalpingStrategy(adjusted_config)
+
             window = candles[i - lookback:i + 1]
             current = candles[i]
 

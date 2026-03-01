@@ -326,7 +326,7 @@ class ScalpingTrader:
         conf_offset = adjustments.get('min_confirmations_offset', 0)
         ema_enabled = adjustments.get('ema_filter_enabled', True)
 
-        # Rebuild default strategy
+        # Rebuild default strategy with all indicator params preserved
         base = self._base_default_config
         adj_config = ScalpingConfig(
             take_profit_percent=base.take_profit_percent * tp_mult,
@@ -334,6 +334,29 @@ class ScalpingTrader:
             min_confirmations=max(1, base.min_confirmations + conf_offset),
             fee_percent=fee_rate,
             ema_filter_enabled=ema_enabled,
+            # Preserve all indicator params
+            rsi_period=base.rsi_period,
+            rsi_oversold=base.rsi_oversold,
+            rsi_overbought=base.rsi_overbought,
+            bb_period=base.bb_period,
+            bb_std_dev=base.bb_std_dev,
+            bb_squeeze_threshold=base.bb_squeeze_threshold,
+            vwap_threshold_percent=base.vwap_threshold_percent,
+            volume_spike_threshold=base.volume_spike_threshold,
+            stoch_k_period=base.stoch_k_period,
+            stoch_d_period=base.stoch_d_period,
+            stoch_oversold=base.stoch_oversold,
+            stoch_overbought=base.stoch_overbought,
+            macd_fast=base.macd_fast,
+            macd_slow=base.macd_slow,
+            macd_signal=base.macd_signal,
+            obv_sma_period=base.obv_sma_period,
+            atr_period=base.atr_period,
+            atr_stop_multiplier=base.atr_stop_multiplier,
+            atr_tp_multiplier=base.atr_tp_multiplier,
+            use_atr_stops=base.use_atr_stops,
+            shorting_enabled=base.shorting_enabled,
+            short_min_confirmations=base.short_min_confirmations,
         )
         self.strategy = ScalpingStrategy(adj_config)
 
@@ -357,6 +380,16 @@ class ScalpingTrader:
                 min_confirmations=max(1, base_conf + conf_offset),
                 fee_percent=fee_rate,
                 ema_filter_enabled=ema_enabled,
+                # New indicator params from per-pair config or base
+                stoch_k_period=params.get('stoch_k_period', base.stoch_k_period),
+                stoch_oversold=params.get('stoch_oversold', base.stoch_oversold),
+                stoch_overbought=params.get('stoch_overbought', base.stoch_overbought),
+                atr_period=params.get('atr_period', base.atr_period),
+                atr_stop_multiplier=params.get('atr_stop_multiplier', base.atr_stop_multiplier),
+                atr_tp_multiplier=params.get('atr_tp_multiplier', base.atr_tp_multiplier),
+                use_atr_stops=params.get('use_atr_stops', base.use_atr_stops),
+                shorting_enabled=base.shorting_enabled,
+                short_min_confirmations=params.get('short_min_confirmations', base.short_min_confirmations),
             )
             self.pair_strategies[pair] = ScalpingStrategy(pair_config)
 

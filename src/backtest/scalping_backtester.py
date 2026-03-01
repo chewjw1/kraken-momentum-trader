@@ -14,6 +14,7 @@ import json
 from ..exchange.kraken_client import KrakenClient, OHLC
 from ..strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from ..strategy.base_strategy import MarketData
+from ..strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
 from ..observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -92,6 +93,10 @@ class ScalpingBacktester:
         self.strategy = ScalpingStrategy(self.scalping_config)
         self.client = KrakenClient(paper_trading=True)
 
+        # Regime detector — adapts strategy parameters during backtest
+        self.regime_detector = RegimeDetector(RegimeConfig())
+        self._current_regime = MarketRegime.UNKNOWN
+
     def fetch_candles(
         self,
         pair: str,
@@ -138,8 +143,16 @@ class ScalpingBacktester:
         position_size_usd = 0.0
         position_side = "long"
 
+        # Reset regime for each pair backtest
+        self._current_regime = MarketRegime.UNKNOWN
+        self.strategy = ScalpingStrategy(self.scalping_config)
+
         # Process each candle
         for i in range(self.config.lookback_candles, len(candles)):
+            # Detect regime every 50 candles (avoid overhead)
+            if i % 50 == 0:
+                self._detect_regime_and_adjust(candles[:i + 1])
+
             lookback = candles[i - self.config.lookback_candles:i + 1]
             current = candles[i]
 
@@ -218,6 +231,67 @@ class ScalpingBacktester:
 
         # Calculate metrics
         return self._calculate_pair_metrics(pair, trades, capital)
+
+    def _detect_regime_and_adjust(self, candles: List[OHLC]) -> None:
+        """
+        Detect market regime from candle history and adjust strategy parameters.
+
+        Matches the live trader behavior: when regime changes, strategy parameters
+        (TP multiplier, SL multiplier, confirmations, EMA filter) are adjusted.
+        """
+        if len(candles) < 200:
+            return  # Need enough data for regime detection
+
+        closes = [c.close for c in candles]
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+
+        result = self.regime_detector.detect(closes, highs, lows)
+
+        if result.regime != self._current_regime:
+            self._current_regime = result.regime
+            adjustments = REGIME_ADJUSTMENTS.get(result.regime, REGIME_ADJUSTMENTS[MarketRegime.UNKNOWN])
+
+            tp_mult = adjustments.get('take_profit_multiplier', 1.0)
+            sl_mult = adjustments.get('stop_loss_multiplier', 1.0)
+            conf_offset = adjustments.get('min_confirmations_offset', 0)
+            ema_enabled = adjustments.get('ema_filter_enabled', True)
+
+            adjusted_config = ScalpingConfig(
+                take_profit_percent=self.scalping_config.take_profit_percent * tp_mult,
+                stop_loss_percent=self.scalping_config.stop_loss_percent * sl_mult,
+                rsi_period=self.scalping_config.rsi_period,
+                rsi_oversold=self.scalping_config.rsi_oversold,
+                rsi_overbought=self.scalping_config.rsi_overbought,
+                bb_period=self.scalping_config.bb_period,
+                bb_std_dev=self.scalping_config.bb_std_dev,
+                vwap_threshold_percent=self.scalping_config.vwap_threshold_percent,
+                volume_spike_threshold=self.scalping_config.volume_spike_threshold,
+                min_confirmations=max(1, self.scalping_config.min_confirmations + conf_offset),
+                fee_percent=self.scalping_config.fee_percent,
+                ema_filter_enabled=ema_enabled,
+                # New indicator params
+                stoch_k_period=self.scalping_config.stoch_k_period,
+                stoch_d_period=self.scalping_config.stoch_d_period,
+                stoch_oversold=self.scalping_config.stoch_oversold,
+                stoch_overbought=self.scalping_config.stoch_overbought,
+                macd_fast=self.scalping_config.macd_fast,
+                macd_slow=self.scalping_config.macd_slow,
+                macd_signal=self.scalping_config.macd_signal,
+                obv_sma_period=self.scalping_config.obv_sma_period,
+                atr_period=self.scalping_config.atr_period,
+                atr_stop_multiplier=self.scalping_config.atr_stop_multiplier,
+                atr_tp_multiplier=self.scalping_config.atr_tp_multiplier,
+                use_atr_stops=self.scalping_config.use_atr_stops,
+                shorting_enabled=self.scalping_config.shorting_enabled,
+                short_min_confirmations=self.scalping_config.short_min_confirmations,
+            )
+            self.strategy = ScalpingStrategy(adjusted_config)
+
+            logger.info(
+                f"Backtest regime change: {result.regime.value} "
+                f"(TP x{tp_mult}, SL x{sl_mult}, conf +{conf_offset})"
+            )
 
     def _build_market_data(self, pair: str, candles: List[OHLC]) -> MarketData:
         """Build MarketData from candles."""
