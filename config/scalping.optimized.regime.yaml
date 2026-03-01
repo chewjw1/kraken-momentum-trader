@@ -1,0 +1,387 @@
+_optimization:
+  type: regime_aware
+  generated_at: '2026-03-01T01:38:26.262689+00:00'
+  period_days: 365
+  regimes:
+  - bull
+  - bear
+  - sideways
+regime_parameters:
+  BTC/USD:
+    bear:
+      take_profit_percent: 8.0
+      stop_loss_percent: 4.0
+      rsi_period: 5
+      rsi_oversold: 25
+      rsi_overbought: 80
+      bb_period: 30
+      bb_std_dev: 1.5
+      vwap_threshold_percent: 0.9
+      volume_spike_threshold: 1.75
+      min_confirmations: 2
+      stoch_k_period: 7
+      stoch_oversold: 20
+      stoch_overbought: 70
+      atr_period: 16
+      atr_stop_multiplier: 1.0
+      atr_tp_multiplier: 1.5
+      short_min_confirmations: 2
+      _metrics:
+        score: 8.47659751429323
+        return: 0.013400435539724276
+        win_rate: 62.5
+        trades: 8
+  ETH/USD:
+    bear:
+      take_profit_percent: 5.5
+      stop_loss_percent: 3.5
+      rsi_period: 5
+      rsi_oversold: 20
+      rsi_overbought: 75
+      bb_period: 30
+      bb_std_dev: 1.75
+      vwap_threshold_percent: 0.1
+      volume_spike_threshold: 2.5
+      min_confirmations: 2
+      stoch_k_period: 13
+      stoch_oversold: 30
+      stoch_overbought: 80
+      atr_period: 20
+      atr_stop_multiplier: 2.25
+      atr_tp_multiplier: 1.5
+      short_min_confirmations: 3
+      _metrics:
+        score: 19.967465613082943
+        return: 0.03213148304258666
+        win_rate: 100.0
+        trades: 8
+  SOL/USD:
+    bear:
+      take_profit_percent: 3.0
+      stop_loss_percent: 3.5
+      rsi_period: 14
+      rsi_oversold: 25
+      rsi_overbought: 70
+      bb_period: 20
+      bb_std_dev: 2.25
+      vwap_threshold_percent: 0.30000000000000004
+      volume_spike_threshold: 1.25
+      min_confirmations: 4
+      stoch_k_period: 5
+      stoch_oversold: 15
+      stoch_overbought: 85
+      atr_period: 10
+      atr_stop_multiplier: 1.25
+      atr_tp_multiplier: 3.5
+      short_min_confirmations: 3
+      _metrics:
+        score: 17.00928097437545
+        return: 0.01698523847262386
+        win_rate: 100.0
+        trades: 2
+  XRP/USD:
+    bear:
+      take_profit_percent: 3.0
+      stop_loss_percent: 1.5
+      rsi_period: 7
+      rsi_oversold: 35
+      rsi_overbought: 65
+      bb_period: 25
+      bb_std_dev: 1.75
+      vwap_threshold_percent: 0.6
+      volume_spike_threshold: 1.75
+      min_confirmations: 1
+      stoch_k_period: 11
+      stoch_oversold: 15
+      stoch_overbought: 85
+      atr_period: 18
+      atr_stop_multiplier: 2.5
+      atr_tp_multiplier: 4.0
+      short_min_confirmations: 2
+      _metrics:
+        score: 15.053763871244577
+        return: 0.03677373694666985
+        win_rate: 100.0
+        trades: 5
+  LINK/USD:
+    bull:
+      take_profit_percent: 4.5
+      stop_loss_percent: 4.0
+      rsi_period: 7
+      rsi_oversold: 30
+      rsi_overbought: 65
+      bb_period: 25
+      bb_std_dev: 2.5
+      vwap_threshold_percent: 0.4
+      volume_spike_threshold: 2.25
+      min_confirmations: 4
+      stoch_k_period: 15
+      stoch_oversold: 25
+      stoch_overbought: 85
+      atr_period: 16
+      atr_stop_multiplier: 2.0
+      atr_tp_multiplier: 3.5
+      short_min_confirmations: 3
+      _metrics:
+        score: 17.622416180903727
+        return: 0.021718152885402197
+        win_rate: 100.0
+        trades: 2
+    bear:
+      take_profit_percent: 7.0
+      stop_loss_percent: 3.0
+      rsi_period: 8
+      rsi_oversold: 35
+      rsi_overbought: 65
+      bb_period: 10
+      bb_std_dev: 1.5
+      vwap_threshold_percent: 0.7000000000000001
+      volume_spike_threshold: 1.25
+      min_confirmations: 2
+      stoch_k_period: 21
+      stoch_oversold: 20
+      stoch_overbought: 75
+      atr_period: 16
+      atr_stop_multiplier: 2.25
+      atr_tp_multiplier: 3.5
+      short_min_confirmations: 3
+      _metrics:
+        score: 19.65286523678779
+        return: 0.02531295824705794
+        win_rate: 100.0
+        trades: 4
+  AVAX/USD:
+    bull:
+      take_profit_percent: 9.0
+      stop_loss_percent: 1.0
+      rsi_period: 5
+      rsi_oversold: 20
+      rsi_overbought: 60
+      bb_period: 10
+      bb_std_dev: 1.5
+      vwap_threshold_percent: 0.2
+      volume_spike_threshold: 1.75
+      min_confirmations: 4
+      stoch_k_period: 19
+      stoch_oversold: 30
+      stoch_overbought: 70
+      atr_period: 16
+      atr_stop_multiplier: 2.0
+      atr_tp_multiplier: 3.75
+      short_min_confirmations: 3
+      _metrics:
+        score: 12.50569018395078
+        return: 0.028415309767980398
+        win_rate: 100.0
+        trades: 4
+    bear:
+      take_profit_percent: 7.0
+      stop_loss_percent: 3.0
+      rsi_period: 6
+      rsi_oversold: 20
+      rsi_overbought: 65
+      bb_period: 10
+      bb_std_dev: 2.0
+      vwap_threshold_percent: 1.0
+      volume_spike_threshold: 2.25
+      min_confirmations: 2
+      stoch_k_period: 9
+      stoch_oversold: 30
+      stoch_overbought: 75
+      atr_period: 16
+      atr_stop_multiplier: 1.0
+      atr_tp_multiplier: 1.75
+      short_min_confirmations: 3
+      _metrics:
+        score: 15.070200076732409
+        return: 0.013365254341613217
+        win_rate: 60.0
+        trades: 10
+  DOT/USD:
+    bull:
+      take_profit_percent: 3.0
+      stop_loss_percent: 1.0
+      rsi_period: 10
+      rsi_oversold: 30
+      rsi_overbought: 60
+      bb_period: 10
+      bb_std_dev: 1.75
+      vwap_threshold_percent: 0.9
+      volume_spike_threshold: 1.0
+      min_confirmations: 2
+      stoch_k_period: 5
+      stoch_oversold: 25
+      stoch_overbought: 80
+      atr_period: 10
+      atr_stop_multiplier: 2.75
+      atr_tp_multiplier: 2.0
+      short_min_confirmations: 2
+      _metrics:
+        score: 14.043707878422705
+        return: 0.0347762764944895
+        win_rate: 75.0
+        trades: 8
+    bear:
+      take_profit_percent: 8.0
+      stop_loss_percent: 3.5
+      rsi_period: 13
+      rsi_oversold: 25
+      rsi_overbought: 60
+      bb_period: 10
+      bb_std_dev: 1.5
+      vwap_threshold_percent: 0.4
+      volume_spike_threshold: 2.25
+      min_confirmations: 3
+      stoch_k_period: 9
+      stoch_oversold: 15
+      stoch_overbought: 85
+      atr_period: 10
+      atr_stop_multiplier: 1.25
+      atr_tp_multiplier: 4.0
+      short_min_confirmations: 3
+      _metrics:
+        score: 17.076846668708637
+        return: 0.035287484687269714
+        win_rate: 75.0
+        trades: 8
+  POL/USD:
+    bull:
+      take_profit_percent: 2.5
+      stop_loss_percent: 3.5
+      rsi_period: 9
+      rsi_oversold: 35
+      rsi_overbought: 65
+      bb_period: 25
+      bb_std_dev: 1.5
+      vwap_threshold_percent: 0.8
+      volume_spike_threshold: 2.0
+      min_confirmations: 3
+      stoch_k_period: 17
+      stoch_oversold: 25
+      stoch_overbought: 85
+      atr_period: 10
+      atr_stop_multiplier: 2.25
+      atr_tp_multiplier: 3.75
+      short_min_confirmations: 3
+      _metrics:
+        score: 16.397697494153647
+        return: 0.01248311114429307
+        win_rate: 100.0
+        trades: 2
+    bear:
+      take_profit_percent: 1.5
+      stop_loss_percent: 3.5
+      rsi_period: 6
+      rsi_oversold: 20
+      rsi_overbought: 80
+      bb_period: 15
+      bb_std_dev: 1.75
+      vwap_threshold_percent: 1.0
+      volume_spike_threshold: 1.75
+      min_confirmations: 1
+      stoch_k_period: 11
+      stoch_oversold: 20
+      stoch_overbought: 85
+      atr_period: 10
+      atr_stop_multiplier: 1.25
+      atr_tp_multiplier: 1.5
+      short_min_confirmations: 2
+      _metrics:
+        score: 3.6390660034881
+        return: 0.002215953777262439
+        win_rate: 57.14285714285714
+        trades: 7
+  ATOM/USD:
+    bull:
+      take_profit_percent: 9.0
+      stop_loss_percent: 0.5
+      rsi_period: 7
+      rsi_oversold: 30
+      rsi_overbought: 80
+      bb_period: 15
+      bb_std_dev: 1.5
+      vwap_threshold_percent: 1.0
+      volume_spike_threshold: 1.75
+      min_confirmations: 2
+      stoch_k_period: 5
+      stoch_oversold: 30
+      stoch_overbought: 75
+      atr_period: 20
+      atr_stop_multiplier: 2.75
+      atr_tp_multiplier: 1.75
+      short_min_confirmations: 4
+      _metrics:
+        score: 26.562051728125653
+        return: 0.04248874963676335
+        win_rate: 100.0
+        trades: 11
+    bear:
+      take_profit_percent: 3.5
+      stop_loss_percent: 2.0
+      rsi_period: 8
+      rsi_oversold: 20
+      rsi_overbought: 80
+      bb_period: 20
+      bb_std_dev: 2.25
+      vwap_threshold_percent: 0.4
+      volume_spike_threshold: 2.25
+      min_confirmations: 3
+      stoch_k_period: 7
+      stoch_oversold: 30
+      stoch_overbought: 80
+      atr_period: 20
+      atr_stop_multiplier: 1.5
+      atr_tp_multiplier: 2.75
+      short_min_confirmations: 2
+      _metrics:
+        score: 23.326195706144766
+        return: 0.033947131437814825
+        win_rate: 100.0
+        trades: 4
+  NEAR/USD:
+    bull:
+      take_profit_percent: 2.5
+      stop_loss_percent: 2.0
+      rsi_period: 5
+      rsi_oversold: 20
+      rsi_overbought: 60
+      bb_period: 10
+      bb_std_dev: 2.25
+      vwap_threshold_percent: 0.2
+      volume_spike_threshold: 1.5
+      min_confirmations: 3
+      stoch_k_period: 19
+      stoch_oversold: 30
+      stoch_overbought: 75
+      atr_period: 16
+      atr_stop_multiplier: 1.0
+      atr_tp_multiplier: 1.75
+      short_min_confirmations: 2
+      _metrics:
+        score: 19.870332302697467
+        return: 0.02740653929019154
+        win_rate: 70.0
+        trades: 10
+    bear:
+      take_profit_percent: 2.5
+      stop_loss_percent: 1.0
+      rsi_period: 5
+      rsi_oversold: 20
+      rsi_overbought: 60
+      bb_period: 30
+      bb_std_dev: 2.25
+      vwap_threshold_percent: 0.1
+      volume_spike_threshold: 2.5
+      min_confirmations: 1
+      stoch_k_period: 21
+      stoch_oversold: 20
+      stoch_overbought: 80
+      atr_period: 20
+      atr_stop_multiplier: 2.5
+      atr_tp_multiplier: 1.75
+      short_min_confirmations: 4
+      _metrics:
+        score: 18.89692032028969
+        return: 0.029453077557550934
+        win_rate: 88.88888888888889
+        trades: 9

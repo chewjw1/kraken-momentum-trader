@@ -447,7 +447,7 @@ class ScalpingOptimizer:
     def _fetch_pair_data(
         self, pair: str, show_progress: bool = True
     ) -> List[OHLC]:
-        """Fetch data for a pair, trying CCXT cache then Kraken API."""
+        """Fetch data for a pair, trying CCXT cache then Kraken API then CCXT/Binance."""
         def progress_cb(current: int, total: int) -> None:
             if show_progress and total > 0:
                 pct = (current / total * 100)
@@ -474,7 +474,7 @@ class ScalpingOptimizer:
                     except Exception:
                         pass
 
-        # Use Kraken API with pagination
+        # Try Kraken API first
         print(f"    Using Kraken API (paginated)...")
         kraken_dm = HistoricalDataManager(
             cache_dir=self.config.cache_dir,
@@ -489,7 +489,33 @@ class ScalpingOptimizer:
         )
         if show_progress:
             print()
-        return candles
+
+        # If Kraken returned data, use it
+        if candles and len(candles) > 100:
+            return candles
+
+        # Fallback to CCXT/Binance for pairs not available on Kraken
+        print(f"    Kraken returned insufficient data, falling back to Binance via CCXT...")
+        try:
+            provider = CCXTDataProvider(
+                cache_dir=self.config.cache_dir, use_cache=True
+            )
+            candles = provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None,
+            )
+            if show_progress:
+                print()
+            if candles and len(candles) > 100:
+                print(f"    Loaded {len(candles)} candles from Binance")
+                return candles
+        except Exception as e:
+            print(f"    Binance fallback also failed: {e}")
+
+        return candles or []
 
     def prefetch_data(self, show_progress: bool = True) -> None:
         """Pre-fetch historical data for all pairs."""
@@ -497,16 +523,27 @@ class ScalpingOptimizer:
         print(f"  Period: {self.config.start_date.date()} to {self.config.end_date.date()}")
         print(f"  Interval: {self.config.interval} minutes")
 
+        failed_pairs = []
         for pair in self.config.pairs:
             print(f"\n  Fetching {pair}...")
 
             candles = self._fetch_pair_data(pair, show_progress)
 
-            if not candles:
-                raise ValueError(f"Failed to fetch data for {pair}")
+            if not candles or len(candles) < 100:
+                print(f"    WARNING: Insufficient data for {pair} ({len(candles) if candles else 0} candles), skipping")
+                failed_pairs.append(pair)
+                continue
 
             self._historical_data[pair] = candles
             print(f"    Loaded {len(candles)} candles for {pair}")
+
+        # Remove failed pairs from config
+        if failed_pairs:
+            self.config.pairs = [p for p in self.config.pairs if p not in failed_pairs]
+            print(f"\n  Skipped {len(failed_pairs)} pairs with insufficient data: {', '.join(failed_pairs)}")
+
+        if not self.config.pairs:
+            raise ValueError("No pairs with sufficient data to optimize")
 
     def _sample_params(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Sample parameters from the trial."""
@@ -1007,7 +1044,7 @@ def parse_args():
     parser.add_argument(
         "--pairs", nargs="+",
         default=["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "LINK/USD",
-                 "AVAX/USD", "DOT/USD", "MATIC/USD", "ATOM/USD", "NEAR/USD"],
+                 "AVAX/USD", "DOT/USD", "POL/USD", "ATOM/USD", "NEAR/USD"],
         help="Trading pairs to optimize"
     )
     parser.add_argument(

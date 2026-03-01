@@ -31,7 +31,7 @@ DEFAULT_PAIRS = [
     "AVAX/USD",
     "DOT/USD",
     "LINK/USD",
-    "MATIC/USD",
+    "POL/USD",
     "ATOM/USD",
     "NEAR/USD",
 ]
