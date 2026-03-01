@@ -6,17 +6,29 @@
     <!-- Status Bar -->
     <div class="flex items-center justify-between">
         <h1 class="text-2xl font-bold">Dashboard</h1>
-        <span class="px-3 py-1 rounded-full text-sm
-                     {% if state == 'idle' %}bg-green-900 text-green-300
-                     {% elif state == 'in_position' %}bg-blue-900 text-blue-300
-                     {% elif state == 'error' %}bg-red-900 text-red-300
-                     {% else %}bg-gray-700 text-gray-300{% endif %}">
-            {{ state | upper }}
-        </span>
+        <div class="flex items-center space-x-3">
+            {% if global_regime %}
+            <span class="px-3 py-1 rounded-full text-xs font-medium
+                {% if global_regime.regime == 'bull' %}bg-green-900 text-green-300 border border-green-700
+                {% elif global_regime.regime == 'bear' %}bg-red-900 text-red-300 border border-red-700
+                {% elif global_regime.regime == 'sideways' %}bg-yellow-900 text-yellow-300 border border-yellow-700
+                {% else %}bg-gray-700 text-gray-300 border border-gray-600{% endif %}"
+                title="Confidence: {{ '%.0f'|format(global_regime.confidence * 100) }}%">
+                MARKET: {{ global_regime.regime | upper }}
+            </span>
+            {% endif %}
+            <span class="px-3 py-1 rounded-full text-sm
+                         {% if state == 'idle' %}bg-green-900 text-green-300
+                         {% elif state == 'in_position' %}bg-blue-900 text-blue-300
+                         {% elif state == 'error' %}bg-red-900 text-red-300
+                         {% else %}bg-gray-700 text-gray-300{% endif %}">
+                {{ state | upper }}
+            </span>
+        </div>
     </div>
 
     <!-- Key Metrics Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
             <div class="text-gray-400 text-sm">Capital</div>
             <div class="text-2xl font-bold text-white">${{ "%.2f"|format(capital) }}</div>
@@ -30,6 +42,10 @@
         <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
             <div class="text-gray-400 text-sm">Win Rate</div>
             <div class="text-2xl font-bold text-white">{{ "%.1f"|format(metrics.win_rate) }}%</div>
+        </div>
+        <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+            <div class="text-gray-400 text-sm">Profit Factor</div>
+            <div class="text-2xl font-bold text-white">{{ "%.2f"|format(metrics.profit_factor) }}</div>
         </div>
         <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
             <div class="text-gray-400 text-sm">Total Trades</div>
@@ -78,6 +94,75 @@
         </div>
     </div>
 
+    <!-- Performance by Pair (Clickable with Regime) -->
+    {% if pairs_summary %}
+    <div class="bg-gray-800 rounded-lg border border-gray-700">
+        <div class="px-4 py-3 border-b border-gray-700">
+            <h2 class="text-lg font-medium">Performance by Pair</h2>
+            <p class="text-xs text-gray-500 mt-1">Click a pair to expand detailed metrics and charts</p>
+        </div>
+        <div class="p-4 space-y-2" id="pairs-container">
+            {% for pair in pairs_summary %}
+            <div class="pair-card bg-gray-900 rounded-lg overflow-hidden border border-gray-700 hover:border-gray-500 transition-colors">
+                <!-- Pair Header (always visible, clickable) -->
+                <div class="pair-header cursor-pointer p-4 flex items-center justify-between"
+                     onclick="togglePairDetail('{{ pair.pair }}')"
+                     data-pair="{{ pair.pair }}">
+                    <div class="flex items-center space-x-4">
+                        <div class="font-bold text-lg">{{ pair.pair }}</div>
+                        <!-- Regime Badge -->
+                        <span class="px-2 py-0.5 rounded text-xs font-medium
+                            {% if pair.regime == 'bull' %}bg-green-900/50 text-green-400 border border-green-800
+                            {% elif pair.regime == 'bear' %}bg-red-900/50 text-red-400 border border-red-800
+                            {% elif pair.regime == 'sideways' %}bg-yellow-900/50 text-yellow-400 border border-yellow-800
+                            {% else %}bg-gray-700 text-gray-400 border border-gray-600{% endif %}">
+                            {{ pair.regime | upper }}
+                            {% if pair.regime_confidence %}({{ "%.0f"|format(pair.regime_confidence * 100) }}%){% endif %}
+                        </span>
+                    </div>
+                    <div class="flex items-center space-x-6 text-sm">
+                        <div>
+                            <span class="text-gray-400">Trades:</span>
+                            <span class="font-medium">{{ pair.trades }}</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">WR:</span>
+                            <span class="font-medium">{{ "%.0f"|format(pair.win_rate) }}%</span>
+                        </div>
+                        <div>
+                            <span class="text-gray-400">L/S:</span>
+                            <span class="text-green-400">{{ pair.long_trades or 0 }}</span>/<span class="text-red-400">{{ pair.short_trades or 0 }}</span>
+                        </div>
+                        <div class="{% if pair.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %} font-bold">
+                            ${{ "%.2f"|format(pair.total_pnl) }}
+                        </div>
+                        <svg class="w-5 h-5 text-gray-500 transform transition-transform pair-chevron"
+                             id="chevron-{{ pair.pair | replace('/', '-') }}"
+                             fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <!-- Expandable Detail Panel (hidden by default) -->
+                <div class="pair-detail hidden border-t border-gray-700"
+                     id="detail-{{ pair.pair | replace('/', '-') }}">
+                    <div class="p-4">
+                        <div class="flex items-center justify-center py-8 text-gray-500">
+                            <svg class="animate-spin h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                            </svg>
+                            Loading...
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Recent Trades -->
     <div class="bg-gray-800 rounded-lg border border-gray-700">
         <div class="px-4 py-3 border-b border-gray-700 flex justify-between items-center">
@@ -90,6 +175,7 @@
                 <thead>
                     <tr class="text-gray-400 text-sm text-left">
                         <th class="px-4 py-2">Pair</th>
+                        <th class="px-4 py-2">Side</th>
                         <th class="px-4 py-2">Entry</th>
                         <th class="px-4 py-2">Exit</th>
                         <th class="px-4 py-2">P&L</th>
@@ -101,6 +187,10 @@
                     {% for trade in recent_trades %}
                     <tr class="border-t border-gray-700">
                         <td class="px-4 py-2 font-medium">{{ trade.pair }}</td>
+                        <td class="px-4 py-2 text-xs
+                            {% if trade.side == 'short' %}text-red-400{% else %}text-green-400{% endif %}">
+                            {{ (trade.side or 'long') | upper }}
+                        </td>
                         <td class="px-4 py-2">${{ "%.2f"|format(trade.entry_price) }}</td>
                         <td class="px-4 py-2">${{ "%.2f"|format(trade.exit_price) }}</td>
                         <td class="px-4 py-2 {% if trade.pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
@@ -119,28 +209,218 @@
             {% endif %}
         </div>
     </div>
+</div>
+{% endblock %}
 
-    <!-- Performance by Pair -->
-    {% if pairs_summary %}
-    <div class="bg-gray-800 rounded-lg border border-gray-700">
-        <div class="px-4 py-3 border-b border-gray-700">
-            <h2 class="text-lg font-medium">Performance by Pair</h2>
-        </div>
-        <div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-            {% for pair in pairs_summary %}
-            <div class="bg-gray-900 rounded p-3">
-                <div class="font-medium">{{ pair.pair }}</div>
-                <div class="text-sm text-gray-400 mt-1">
-                    {{ pair.trades }} trades |
-                    {{ pair.wins }} wins |
-                    <span class="{% if pair.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
-                        ${{ "%.2f"|format(pair.total_pnl) }}
-                    </span>
+{% block scripts %}
+<script>
+// Track which pairs have been loaded
+const loadedPairs = {};
+
+function togglePairDetail(pair) {
+    const safeId = pair.replace('/', '-');
+    const detail = document.getElementById('detail-' + safeId);
+    const chevron = document.getElementById('chevron-' + safeId);
+
+    if (detail.classList.contains('hidden')) {
+        detail.classList.remove('hidden');
+        chevron.classList.add('rotate-180');
+        if (!loadedPairs[pair]) {
+            fetchPairDetail(pair);
+        }
+    } else {
+        detail.classList.add('hidden');
+        chevron.classList.remove('rotate-180');
+    }
+}
+
+function fetchPairDetail(pair) {
+    const safeId = pair.replace('/', '-');
+    const detail = document.getElementById('detail-' + safeId);
+
+    fetch('/api/pair/' + pair)
+        .then(r => r.json())
+        .then(data => {
+            loadedPairs[pair] = true;
+            renderPairDetail(safeId, data);
+        })
+        .catch(err => {
+            detail.innerHTML = '<div class="p-4 text-red-400">Failed to load data</div>';
+        });
+}
+
+function renderPairDetail(safeId, data) {
+    const detail = document.getElementById('detail-' + safeId);
+    if (data.total_trades === 0) {
+        detail.innerHTML = '<div class="p-4 text-gray-400">No completed trades for this pair</div>';
+        return;
+    }
+
+    const winRate = data.win_rate || 0;
+    const pf = data.profit_factor || 0;
+
+    detail.innerHTML = `
+        <div class="p-4 space-y-4">
+            <!-- Metrics Grid -->
+            <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-gray-500 text-xs">Win Rate</div>
+                    <div class="text-lg font-bold">${winRate.toFixed(1)}%</div>
+                </div>
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-gray-500 text-xs">Profit Factor</div>
+                    <div class="text-lg font-bold">${pf.toFixed(2)}</div>
+                </div>
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-gray-500 text-xs">Avg Win</div>
+                    <div class="text-lg font-bold text-green-400">$${(data.avg_win || 0).toFixed(2)}</div>
+                </div>
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-gray-500 text-xs">Avg Loss</div>
+                    <div class="text-lg font-bold text-red-400">$${(data.avg_loss || 0).toFixed(2)}</div>
+                </div>
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-gray-500 text-xs">Best Trade</div>
+                    <div class="text-lg font-bold text-green-400">$${(data.best_trade || 0).toFixed(2)}</div>
+                </div>
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-gray-500 text-xs">Worst Trade</div>
+                    <div class="text-lg font-bold text-red-400">$${(data.worst_trade || 0).toFixed(2)}</div>
                 </div>
             </div>
-            {% endfor %}
+
+            <!-- 24h Stats Bar -->
+            <div class="bg-gray-800 rounded p-3 flex items-center justify-between text-sm">
+                <span class="text-gray-400">Last 24h:</span>
+                <span>${data.trades_24h || 0} trades</span>
+                <span class="${(data.pnl_24h || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                    $${(data.pnl_24h || 0).toFixed(2)}
+                </span>
+                <span>L: <span class="text-green-400">${data.long_trades || 0}</span> / S: <span class="text-red-400">${data.short_trades || 0}</span></span>
+                <span>Fees: $${(data.total_fees || 0).toFixed(2)}</span>
+            </div>
+
+            <!-- Charts Row -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <!-- Cumulative P&L Chart -->
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-sm text-gray-400 mb-2">Cumulative P&L</div>
+                    <canvas id="chart-pnl-${safeId}" height="160"></canvas>
+                </div>
+                <!-- Per-Trade P&L Chart -->
+                <div class="bg-gray-800 rounded p-3">
+                    <div class="text-sm text-gray-400 mb-2">Trade Returns (%)</div>
+                    <canvas id="chart-returns-${safeId}" height="160"></canvas>
+                </div>
+            </div>
+
+            <!-- Recent Trades Table -->
+            <div>
+                <div class="text-sm text-gray-400 mb-2">Recent Trades</div>
+                <div class="overflow-x-auto max-h-64 overflow-y-auto">
+                    <table class="w-full text-sm">
+                        <thead class="sticky top-0 bg-gray-900">
+                            <tr class="text-gray-500 text-xs text-left">
+                                <th class="pb-2 pr-3">Side</th>
+                                <th class="pb-2 pr-3">Entry</th>
+                                <th class="pb-2 pr-3">Exit</th>
+                                <th class="pb-2 pr-3">P&L</th>
+                                <th class="pb-2 pr-3">P&L %</th>
+                                <th class="pb-2 pr-3">Size</th>
+                                <th class="pb-2 pr-3">Reason</th>
+                                <th class="pb-2">Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${(data.recent_trades || []).map(t => `
+                                <tr class="border-t border-gray-700">
+                                    <td class="py-1.5 pr-3 ${t.side === 'short' ? 'text-red-400' : 'text-green-400'} text-xs">
+                                        ${(t.side || 'long').toUpperCase()}
+                                    </td>
+                                    <td class="py-1.5 pr-3">$${(t.entry_price || 0).toFixed(2)}</td>
+                                    <td class="py-1.5 pr-3">$${(t.exit_price || 0).toFixed(2)}</td>
+                                    <td class="py-1.5 pr-3 ${(t.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                        $${(t.pnl || 0).toFixed(2)}
+                                    </td>
+                                    <td class="py-1.5 pr-3 ${(t.pnl_percent || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">
+                                        ${(t.pnl_percent || 0).toFixed(2)}%
+                                    </td>
+                                    <td class="py-1.5 pr-3 text-gray-400">$${(t.size_usd || 0).toFixed(0)}</td>
+                                    <td class="py-1.5 pr-3 text-gray-500 text-xs">${t.exit_reason || '-'}</td>
+                                    <td class="py-1.5 text-gray-500 text-xs">${t.exit_time ? t.exit_time.slice(0,16) : '-'}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
-    </div>
-    {% endif %}
-</div>
+    `;
+
+    // Render charts
+    renderPairCharts(safeId, data);
+}
+
+function renderPairCharts(safeId, data) {
+    const series = data.pnl_series || [];
+    if (series.length === 0) return;
+
+    const chartOpts = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+            y: { grid: { color: '#1F2937' }, ticks: { color: '#6B7280', font: { size: 10 } } },
+            x: { grid: { color: '#1F2937' }, ticks: { color: '#6B7280', maxTicksLimit: 8, font: { size: 9 } } }
+        }
+    };
+
+    // Cumulative P&L line chart
+    const pnlCtx = document.getElementById('chart-pnl-' + safeId);
+    if (pnlCtx) {
+        new Chart(pnlCtx.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: series.map(s => s.date.slice(5, 16)),
+                datasets: [{
+                    data: series.map(s => s.cumulative_pnl),
+                    borderColor: series[series.length-1].cumulative_pnl >= 0 ? '#10B981' : '#EF4444',
+                    backgroundColor: series[series.length-1].cumulative_pnl >= 0
+                        ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: series.length > 30 ? 0 : 3,
+                    borderWidth: 2,
+                }]
+            },
+            options: chartOpts
+        });
+    }
+
+    // Per-trade returns bar chart (green=long win, orange=short win, red=loss)
+    const retCtx = document.getElementById('chart-returns-' + safeId);
+    if (retCtx) {
+        new Chart(retCtx.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: series.map(s => s.date.slice(5, 16)),
+                datasets: [{
+                    data: series.map(s => s.pnl_pct),
+                    backgroundColor: series.map(s => {
+                        if (s.side === 'short') return s.pnl_pct >= 0 ? '#F59E0B' : '#DC2626';
+                        return s.pnl_pct >= 0 ? '#10B981' : '#EF4444';
+                    }),
+                    borderRadius: 2,
+                }]
+            },
+            options: chartOpts
+        });
+    }
+}
+
+// Auto-refresh metrics every 30 seconds
+setInterval(() => {
+    fetch('/api/metrics').then(r => r.json()).catch(() => {});
+}, 30000);
+</script>
 {% endblock %}

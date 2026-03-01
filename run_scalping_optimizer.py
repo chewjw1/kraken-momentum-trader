@@ -54,7 +54,7 @@ class ScalpingOptimizerConfig:
     start_date: datetime = None
     end_date: datetime = None
     initial_capital: float = 10000.0
-    interval: int = 60  # 1-hour candles
+    interval: int = 240  # 4-hour candles (Kraken has ~120 days of 4h data)
     fee_percent: float = 0.16  # Maker fee (use limit orders)
     position_size_percent: float = 20.0
     storage_path: str = "data/optimization/scalping_study.db"
@@ -343,7 +343,7 @@ class ScalpingBacktestRunner:
         gross_loss = abs(sum(t["pnl_usd"] for t in trades if t["pnl_usd"] < 0))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
-        # Sharpe estimate (capped to avoid inf with tiny sample sizes)
+        # Sharpe estimate (capped and scaled by sample size to avoid overfitting)
         returns = [t["pnl_percent"] for t in trades]
         if len(returns) > 1:
             avg_ret = sum(returns) / len(returns)
@@ -353,6 +353,10 @@ class ScalpingBacktestRunner:
         else:
             sharpe = 0
         sharpe = max(min(sharpe, 10.0), -10.0)  # Cap at +/- 10
+        # Scale Sharpe down for small sample sizes — 2 trades means Sharpe is meaningless
+        n_trades = len(trades)
+        if n_trades < 20:
+            sharpe *= n_trades / 20.0  # Linear decay below 20 trades
 
         # Max drawdown
         peak = self.initial_capital
@@ -376,12 +380,16 @@ class ScalpingBacktestRunner:
         # Cap profit factor to prevent single-win results from dominating
         profit_factor_capped = min(profit_factor, 5.0) if profit_factor != float("inf") else 5.0
 
-        # Composite score with robust trade count penalty
-        min_trades = 10
+        # Composite score with strong trade count penalty
+        # Require 15+ trades for confidence; trials with <5 trades are nearly worthless
+        min_trades = 15
         if len(trades) < min_trades:
-            trade_penalty = (min_trades - len(trades)) * 3.0
+            trade_penalty = (min_trades - len(trades)) * 5.0
         else:
             trade_penalty = 0
+        # Extra harsh penalty for extremely low trade counts
+        if len(trades) < 5:
+            trade_penalty += 30.0
 
         # Base score components
         return_score = total_return * 100 * 0.3
@@ -570,12 +578,22 @@ class ScalpingOptimizer:
         return params
 
     def _objective_single_pair(self, trial: optuna.Trial, pair: str) -> float:
-        """Objective function for single pair optimization."""
+        """Objective function with out-of-sample validation.
+
+        Train on first 70% of data, validate on last 30%.
+        Final score = 0.4 * train_score + 0.6 * validation_score.
+        This prevents overfitting to the training period.
+        """
         params = self._sample_params(trial)
 
         candles = self._historical_data.get(pair)
         if not candles:
             return float("-inf")
+
+        # Split data: 70% train, 30% validation
+        split_idx = int(len(candles) * 0.7)
+        train_candles = candles[:split_idx]
+        val_candles = candles[split_idx:]
 
         runner = ScalpingBacktestRunner(
             initial_capital=self.config.initial_capital,
@@ -583,21 +601,35 @@ class ScalpingOptimizer:
             fee_percent=self.config.fee_percent
         )
 
-        metrics = runner.run(candles, pair, params)
+        # Run on training data
+        train_metrics = runner.run(train_candles, pair, params)
 
-        # Store metrics as user attributes
-        trial.set_user_attr("total_trades", metrics["total_trades"])
-        trial.set_user_attr("win_rate", metrics["win_rate"])
-        trial.set_user_attr("total_return", metrics["total_return"])
-        trial.set_user_attr("sharpe_ratio", metrics["sharpe_ratio"])
-        trial.set_user_attr("max_drawdown", metrics["max_drawdown_percent"])
-        trial.set_user_attr("profit_factor", metrics["profit_factor"])
-        trial.set_user_attr("recent_win_rate", metrics.get("recent_win_rate", 0))
-        trial.set_user_attr("recent_return", metrics.get("recent_return", 0))
-        trial.set_user_attr("long_trades", metrics.get("long_trades", 0))
-        trial.set_user_attr("short_trades", metrics.get("short_trades", 0))
+        # Run on validation data (out-of-sample)
+        val_metrics = runner.run(val_candles, pair, params)
 
-        return metrics["score"]
+        # Combined score: validation weighted more heavily
+        train_score = train_metrics["score"]
+        val_score = val_metrics["score"]
+        combined_score = 0.4 * train_score + 0.6 * val_score
+
+        # Store metrics as user attributes (show validation metrics)
+        total_trades = train_metrics["total_trades"] + val_metrics["total_trades"]
+        trial.set_user_attr("total_trades", total_trades)
+        trial.set_user_attr("train_trades", train_metrics["total_trades"])
+        trial.set_user_attr("val_trades", val_metrics["total_trades"])
+        trial.set_user_attr("win_rate", val_metrics["win_rate"])
+        trial.set_user_attr("total_return", val_metrics["total_return"])
+        trial.set_user_attr("sharpe_ratio", val_metrics["sharpe_ratio"])
+        trial.set_user_attr("max_drawdown", val_metrics["max_drawdown_percent"])
+        trial.set_user_attr("profit_factor", val_metrics["profit_factor"])
+        trial.set_user_attr("recent_win_rate", val_metrics.get("recent_win_rate", 0))
+        trial.set_user_attr("recent_return", val_metrics.get("recent_return", 0))
+        trial.set_user_attr("long_trades", val_metrics.get("long_trades", 0))
+        trial.set_user_attr("short_trades", val_metrics.get("short_trades", 0))
+        trial.set_user_attr("train_score", train_score)
+        trial.set_user_attr("val_score", val_score)
+
+        return combined_score
 
     def optimize_per_pair(
         self,
@@ -1060,13 +1092,15 @@ def parse_args():
         help="End date (YYYY-MM-DD)"
     )
     parser.add_argument(
-        "--interval", type=int, default=60,
+        "--interval", type=int, default=240,
         choices=[1, 5, 15, 30, 60, 240, 1440],
-        help="Candle interval in minutes (default: 60, 1440=daily)"
+        help="Candle interval in minutes (default: 240=4h). NOTE: Kraken limits: "
+             "1h=~30 days, 4h=~120 days, daily=~365 days of history"
     )
     parser.add_argument(
-        "--days", type=int, default=180,
-        help="Days of historical data (default: 180, use 365 for 1 year, 730 for 2 years)"
+        "--days", type=int, default=120,
+        help="Days of historical data (default: 120). Kraken caps at ~720 candles "
+             "per interval, so 4h candles max ~120 days"
     )
     parser.add_argument(
         "--per-pair", action="store_true",

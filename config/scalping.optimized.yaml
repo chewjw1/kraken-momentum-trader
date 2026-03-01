@@ -1,133 +1,265 @@
 _optimization:
-  generated_at: '2026-02-28T12:50:27.262030+00:00'
-  study_name: scalping_optimization
-  period_days: 90
+  generated_at: '2026-03-01T14:02:41.307050+00:00'
+  study_name: scalping_optimization_v2
+  period_days: 120
 pair_parameters:
   BTC/USD:
-    take_profit_percent: 2.0
-    stop_loss_percent: 1.0
-    rsi_period: 8
+    take_profit_percent: 2.5
+    stop_loss_percent: 0.5
+    rsi_period: 6
     rsi_oversold: 20
-    rsi_overbought: 60
-    bb_period: 25
-    bb_std_dev: 2.0
-    vwap_threshold_percent: 0.30000000000000004
-    volume_spike_threshold: 1.5
+    rsi_overbought: 70
+    bb_period: 15
+    bb_std_dev: 2.5
+    vwap_threshold_percent: 1.0
+    volume_spike_threshold: 2.0
     min_confirmations: 2
+    stoch_k_period: 15
+    stoch_oversold: 20
+    stoch_overbought: 85
+    atr_period: 10
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 1.75
+    short_min_confirmations: 2
     _metrics:
-      score: 1.5714742761193858
-      return: 0.006805331698455484
-      win_rate: 60.0
-      trades: 15
+      score: 5.515302540233742
+      return: 0.015455683385994599
+      win_rate: 66.66666666666666
+      trades: 39
+      recent_win_rate: 100.0
+      long_trades: 6
+      short_trades: 6
   ETH/USD:
     take_profit_percent: 8.0
-    stop_loss_percent: 1.0
-    rsi_period: 13
-    rsi_oversold: 40
-    rsi_overbought: 75
-    bb_period: 25
-    bb_std_dev: 1.5
-    vwap_threshold_percent: 0.2
-    volume_spike_threshold: 2.25
-    min_confirmations: 3
-    _metrics:
-      score: 11.981593793913959
-      return: 0.024539844847848873
-      win_rate: 100.0
-      trades: 2
-  SOL/USD:
-    take_profit_percent: 2.0
-    stop_loss_percent: 1.0
-    rsi_period: 14
-    rsi_oversold: 40
-    rsi_overbought: 70
-    bb_period: 15
-    bb_std_dev: 2.25
-    vwap_threshold_percent: 0.1
-    volume_spike_threshold: 1.25
-    min_confirmations: 2
-    _metrics:
-      score: -0.49793436040218975
-      return: -0.012432212687215543
-      win_rate: 43.75
-      trades: 16
-  XRP/USD:
-    take_profit_percent: 6.5
-    stop_loss_percent: 4.0
-    rsi_period: 7
-    rsi_oversold: 25
-    rsi_overbought: 70
-    bb_period: 15
-    bb_std_dev: 1.5
-    vwap_threshold_percent: 0.4
-    volume_spike_threshold: 2.0
-    min_confirmations: 4
-    _metrics:
-      score: 11.77660493772916
-      return: 0.019415123443229095
-      win_rate: 100.0
-      trades: 2
-  DOGE/USD:
-    take_profit_percent: 6.5
-    stop_loss_percent: 1.5
+    stop_loss_percent: 2.0
     rsi_period: 5
-    rsi_oversold: 25
-    rsi_overbought: 65
-    bb_period: 30
-    bb_std_dev: 1.75
-    vwap_threshold_percent: 0.9
+    rsi_oversold: 30
+    rsi_overbought: 60
+    bb_period: 25
+    bb_std_dev: 2.25
+    vwap_threshold_percent: 0.30000000000000004
     volume_spike_threshold: 2.25
     min_confirmations: 1
+    stoch_k_period: 17
+    stoch_oversold: 15
+    stoch_overbought: 75
+    atr_period: 10
+    atr_stop_multiplier: 1.0
+    atr_tp_multiplier: 1.75
+    short_min_confirmations: 2
     _metrics:
-      score: 0.013714245634314892
-      return: -0.00933381098888276
-      win_rate: 25.0
-      trades: 28
-  ADA/USD:
-    take_profit_percent: 8.0
-    stop_loss_percent: 1.5
+      score: 10.464270932805697
+      return: -0.017966397528110793
+      win_rate: 47.05882352941176
+      trades: 64
+      recent_win_rate: 77.77777777777779
+      long_trades: 13
+      short_trades: 4
+  SOL/USD:
+    take_profit_percent: 7.0
+    stop_loss_percent: 3.5
     rsi_period: 6
-    rsi_oversold: 30
-    rsi_overbought: 65
-    bb_period: 30
+    rsi_oversold: 20
+    rsi_overbought: 80
+    bb_period: 15
     bb_std_dev: 2.5
+    vwap_threshold_percent: 0.8
+    volume_spike_threshold: 1.25
+    min_confirmations: 3
+    stoch_k_period: 15
+    stoch_oversold: 15
+    stoch_overbought: 70
+    atr_period: 14
+    atr_stop_multiplier: 2.75
+    atr_tp_multiplier: 2.0
+    short_min_confirmations: 2
+    _metrics:
+      score: 15.904860382898853
+      return: 0.042361212259762214
+      win_rate: 66.66666666666666
+      trades: 38
+      recent_win_rate: 87.5
+      long_trades: 7
+      short_trades: 8
+  XRP/USD:
+    take_profit_percent: 10.0
+    stop_loss_percent: 2.5
+    rsi_period: 7
+    rsi_oversold: 25
+    rsi_overbought: 65
+    bb_period: 25
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.1
+    volume_spike_threshold: 1.0
+    min_confirmations: 2
+    stoch_k_period: 21
+    stoch_oversold: 30
+    stoch_overbought: 75
+    atr_period: 10
+    atr_stop_multiplier: 1.25
+    atr_tp_multiplier: 2.0
+    short_min_confirmations: 2
+    _metrics:
+      score: 12.733404178492446
+      return: 0.07099450343639455
+      win_rate: 66.66666666666666
+      trades: 49
+      recent_win_rate: 75.0
+      long_trades: 11
+      short_trades: 4
+  LINK/USD:
+    take_profit_percent: 3.5
+    stop_loss_percent: 2.5
+    rsi_period: 5
+    rsi_oversold: 35
+    rsi_overbought: 60
+    bb_period: 10
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.5
+    volume_spike_threshold: 2.25
+    min_confirmations: 3
+    stoch_k_period: 7
+    stoch_oversold: 15
+    stoch_overbought: 75
+    atr_period: 10
+    atr_stop_multiplier: 1.5
+    atr_tp_multiplier: 2.5
+    short_min_confirmations: 2
+    _metrics:
+      score: 12.848410223769225
+      return: -0.0016713402483763274
+      win_rate: 53.333333333333336
+      trades: 48
+      recent_win_rate: 62.5
+      long_trades: 6
+      short_trades: 9
+  AVAX/USD:
+    take_profit_percent: 7.5
+    stop_loss_percent: 4.0
+    rsi_period: 5
+    rsi_oversold: 20
+    rsi_overbought: 60
+    bb_period: 30
+    bb_std_dev: 1.75
+    vwap_threshold_percent: 0.6
+    volume_spike_threshold: 1.25
+    min_confirmations: 3
+    stoch_k_period: 21
+    stoch_oversold: 25
+    stoch_overbought: 70
+    atr_period: 12
+    atr_stop_multiplier: 1.0
+    atr_tp_multiplier: 1.5
+    short_min_confirmations: 2
+    _metrics:
+      score: 13.188441232300669
+      return: 0.04036256386816276
+      win_rate: 60.0
+      trades: 52
+      recent_win_rate: 75.0
+      long_trades: 5
+      short_trades: 10
+  DOT/USD:
+    take_profit_percent: 3.0
+    stop_loss_percent: 3.0
+    rsi_period: 7
+    rsi_oversold: 25
+    rsi_overbought: 60
+    bb_period: 10
+    bb_std_dev: 2.25
     vwap_threshold_percent: 0.5
     volume_spike_threshold: 2.5
     min_confirmations: 1
+    stoch_k_period: 19
+    stoch_oversold: 20
+    stoch_overbought: 70
+    atr_period: 12
+    atr_stop_multiplier: 1.25
+    atr_tp_multiplier: 1.5
+    short_min_confirmations: 2
     _metrics:
-      score: -0.11231384380513654
-      return: -0.009374281094075013
-      win_rate: 26.08695652173913
-      trades: 23
-  LINK/USD:
-    take_profit_percent: 8.0
-    stop_loss_percent: 1.0
-    rsi_period: 12
-    rsi_oversold: 35
+      score: 12.212358941615003
+      return: 0.0182406173868354
+      win_rate: 60.0
+      trades: 49
+      recent_win_rate: 87.5
+      long_trades: 9
+      short_trades: 6
+  POL/USD:
+    take_profit_percent: 5.5
+    stop_loss_percent: 4.0
+    rsi_period: 6
+    rsi_oversold: 40
+    rsi_overbought: 70
+    bb_period: 30
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.2
+    volume_spike_threshold: 2.5
+    min_confirmations: 1
+    stoch_k_period: 17
+    stoch_oversold: 20
+    stoch_overbought: 70
+    atr_period: 10
+    atr_stop_multiplier: 2.75
+    atr_tp_multiplier: 1.5
+    short_min_confirmations: 2
+    _metrics:
+      score: 13.37084600456696
+      return: 0.0632238424175357
+      win_rate: 76.47058823529412
+      trades: 53
+      recent_win_rate: 100.0
+      long_trades: 10
+      short_trades: 7
+  ATOM/USD:
+    take_profit_percent: 5.5
+    stop_loss_percent: 3.0
+    rsi_period: 11
+    rsi_oversold: 25
     rsi_overbought: 60
     bb_period: 30
-    bb_std_dev: 1.75
+    bb_std_dev: 2.5
     vwap_threshold_percent: 0.9
-    volume_spike_threshold: 1.0
-    min_confirmations: 2
+    volume_spike_threshold: 1.25
+    min_confirmations: 1
+    stoch_k_period: 5
+    stoch_oversold: 15
+    stoch_overbought: 70
+    atr_period: 20
+    atr_stop_multiplier: 1.25
+    atr_tp_multiplier: 1.5
+    short_min_confirmations: 3
     _metrics:
-      score: 5.144285239807736
-      return: 0.04110170138591438
-      win_rate: 50.0
-      trades: 10
-  AVAX/USD:
+      score: 8.809798869002075
+      return: 0.0296011052793252
+      win_rate: 62.5
+      trades: 53
+      recent_win_rate: 75.0
+      long_trades: 11
+      short_trades: 5
+  NEAR/USD:
     take_profit_percent: 5.5
-    stop_loss_percent: 2.5
-    rsi_period: 8
-    rsi_oversold: 20
+    stop_loss_percent: 3.5
+    rsi_period: 5
+    rsi_oversold: 40
     rsi_overbought: 75
-    bb_period: 30
-    bb_std_dev: 1.5
-    vwap_threshold_percent: 0.2
-    volume_spike_threshold: 1.5
-    min_confirmations: 2
+    bb_period: 10
+    bb_std_dev: 2.5
+    vwap_threshold_percent: 0.8
+    volume_spike_threshold: 1.0
+    min_confirmations: 1
+    stoch_k_period: 15
+    stoch_oversold: 25
+    stoch_overbought: 75
+    atr_period: 20
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 1.75
+    short_min_confirmations: 2
     _metrics:
-      score: 3.8746576927007084
-      return: 0.033347661670916934
-      win_rate: 60.0
-      trades: 10
+      score: 11.918772728186024
+      return: -0.006757676081037061
+      win_rate: 56.25
+      trades: 46
+      recent_win_rate: 75.0
+      long_trades: 13
+      short_trades: 3

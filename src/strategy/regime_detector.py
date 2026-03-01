@@ -41,9 +41,11 @@ class RegimeConfig:
     fast_sma_period: int = 50      # For slope calculation
     slow_sma_period: int = 200     # For trend confirmation
 
-    # Slope thresholds (annualized % change per period)
-    bull_slope_threshold: float = 0.05    # SMA rising > 0.05% per period
-    bear_slope_threshold: float = -0.05   # SMA falling < -0.05% per period
+    # Slope thresholds (% change per period)
+    # Lowered from 0.05 to 0.02 — old thresholds were too aggressive and
+    # classified most periods as bear (missed bull regimes for BTC, ETH, etc.)
+    bull_slope_threshold: float = 0.02    # SMA rising > 0.02% per period
+    bear_slope_threshold: float = -0.02   # SMA falling < -0.02% per period
 
     # Volatility (ATR-based)
     atr_period: int = 14
@@ -292,10 +294,10 @@ class RegimeDetector:
         elif sma_slope_pct < self.config.bear_slope_threshold:
             bear_score += 0.4
 
-        # Signal 2: Price above/below slow SMA
-        if price_vs_slow_sma_pct > 2.0:
+        # Signal 2: Price above/below slow SMA (lowered from 2.0 to 1.0)
+        if price_vs_slow_sma_pct > 1.0:
             bull_score += 0.3
-        elif price_vs_slow_sma_pct < -2.0:
+        elif price_vs_slow_sma_pct < -1.0:
             bear_score += 0.3
 
         # Signal 3: Fast SMA above/below slow SMA (golden/death cross)
@@ -313,10 +315,10 @@ class RegimeDetector:
             else:
                 bear_score += 0.1
 
-        # Determine regime
-        if bull_score >= 0.5:
+        # Determine regime (lowered threshold from 0.5 to 0.4 for better detection)
+        if bull_score >= 0.4:
             return MarketRegime.BULL, min(bull_score, 1.0)
-        elif bear_score >= 0.5:
+        elif bear_score >= 0.4:
             return MarketRegime.BEAR, min(bear_score, 1.0)
         else:
             # Neither strong bull nor bear -- sideways
