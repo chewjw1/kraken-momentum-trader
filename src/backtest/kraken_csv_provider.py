@@ -118,26 +118,37 @@ class KrakenCSVProvider:
                 if candles:
                     break
 
-        # Strategy 2: Look for pair-specific ZIP files
+        # Strategy 2: Search ALL ZIP files and combine (quarterly ZIPs)
         if not candles:
             for name in kraken_names:
-                for zip_file in self.data_dir.glob("*.zip"):
-                    candles = self._load_from_zip(zip_file, name, interval, start, end)
-                    if candles:
-                        logger.info(f"Loading {pair} from ZIP: {zip_file.name}")
-                        break
-                if candles:
+                all_zip_candles = []
+                for zip_file in sorted(self.data_dir.glob("*.zip")):
+                    zip_candles = self._load_from_zip(zip_file, name, interval, start, end)
+                    if zip_candles:
+                        logger.info(f"Loading {pair} from ZIP: {zip_file.name} ({len(zip_candles)} candles)")
+                        all_zip_candles.extend(zip_candles)
+                if all_zip_candles:
+                    candles = all_zip_candles
                     break
 
         if not candles:
             logger.warning(f"No Kraken CSV data found for {pair} at {interval}m interval")
             return []
 
-        # Filter to requested range
+        # Filter to requested range and deduplicate
         start_ts = start.timestamp()
         end_ts = end.timestamp()
         filtered = [c for c in candles if start_ts <= c.timestamp.timestamp() <= end_ts]
         filtered.sort(key=lambda c: c.timestamp)
+        # Deduplicate by timestamp (quarters may overlap at boundaries)
+        seen = set()
+        unique = []
+        for c in filtered:
+            ts = int(c.timestamp.timestamp())
+            if ts not in seen:
+                seen.add(ts)
+                unique.append(c)
+        filtered = unique
 
         logger.info(f"Loaded {len(filtered)} candles for {pair} from Kraken CSV ({interval}m)")
 
