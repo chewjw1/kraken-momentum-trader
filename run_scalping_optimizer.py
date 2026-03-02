@@ -1115,7 +1115,7 @@ def parse_args():
     )
     parser.add_argument(
         "--interval", type=int, default=240,
-        choices=[1, 5, 15, 30, 60, 240, 1440],
+        choices=[1, 5, 15, 30, 60, 240, 720, 1440],
         help="Candle interval in minutes (default: 240=4h)"
     )
     parser.add_argument(

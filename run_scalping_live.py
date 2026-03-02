@@ -146,6 +146,12 @@ class ScalpingTrader:
         # Candle interval from config (default 60 for backward compatibility)
         self.candle_interval = self.config.get('strategy', {}).get('candle_interval', 60)
 
+        # Per-pair candle intervals (allows mixing 4h and 12h per pair)
+        self.pair_intervals: Dict[str, int] = {}
+        for pair, params in pair_params.items():
+            if 'candle_interval' in params:
+                self.pair_intervals[pair] = params['candle_interval']
+
         # Metrics
         self.metrics = {
             'total_trades': 0,
@@ -262,7 +268,8 @@ class ScalpingTrader:
     def _get_market_data(self, pair: str) -> Optional[MarketData]:
         """Fetch market data for a pair."""
         try:
-            ohlc = self.client.get_ohlc(pair, interval=self.candle_interval)
+            interval = self.pair_intervals.get(pair, self.candle_interval)
+            ohlc = self.client.get_ohlc(pair, interval=interval)
             if not ohlc or len(ohlc) < 25:
                 return None
 
