@@ -36,6 +36,7 @@ except ImportError:
 
 from src.backtest.ccxt_data_provider import CCXTDataProvider
 from src.backtest.data import HistoricalDataManager
+from src.backtest.kraken_csv_provider import KrakenCSVProvider, CryptoCompareProvider
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
 from src.strategy.base_strategy import MarketData, Position, SignalType
@@ -455,35 +456,57 @@ class ScalpingOptimizer:
     def _fetch_pair_data(
         self, pair: str, show_progress: bool = True
     ) -> List[OHLC]:
-        """Fetch data for a pair, trying CCXT cache then Kraken API then CCXT/Binance."""
+        """Fetch data for a pair with cascading sources.
+
+        Priority order:
+          1. Kraken CSV files (uploaded historical data - best quality)
+          2. CryptoCompare API (free, years of hourly data)
+          3. Kraken REST API (only ~720 candles)
+          4. CCXT/Binance fallback
+        """
         def progress_cb(current: int, total: int) -> None:
             if show_progress and total > 0:
                 pct = (current / total * 100)
                 print(f"\r    Progress: {current}/{total} ({pct:.0f}%)...", end="", flush=True)
 
-        # Check CCXT cache first (no network call)
-        cache_dir = Path(self.config.cache_dir)
-        if cache_dir.exists():
-            for cache_file in cache_dir.glob("*.json"):
-                pair_clean = pair.replace("/", "_")
-                if pair_clean in cache_file.name:
-                    try:
-                        provider = CCXTDataProvider(
-                            cache_dir=self.config.cache_dir, use_cache=True
-                        )
-                        # Only check cache -- don't fetch from network
-                        candles = provider._load_from_cache(
-                            pair, self.config.start_date, self.config.end_date,
-                            self.config.interval
-                        )
-                        if candles and len(candles) > 100:
-                            print(f"    Loaded {len(candles)} candles from CCXT cache")
-                            return candles
-                    except Exception:
-                        pass
+        # Source 1: Kraken CSV files (uploaded historical data)
+        print(f"    Checking Kraken CSV files...")
+        try:
+            csv_provider = KrakenCSVProvider()
+            candles = csv_provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None,
+            )
+            if candles and len(candles) > 100:
+                print(f"    Loaded {len(candles)} candles from Kraken CSV files")
+                return candles
+        except Exception as e:
+            print(f"    Kraken CSV not available: {e}")
 
-        # Try Kraken API first
-        print(f"    Using Kraken API (paginated)...")
+        # Source 2: CryptoCompare API (free, deep history)
+        print(f"    Fetching from CryptoCompare API...")
+        try:
+            cc_provider = CryptoCompareProvider()
+            candles = cc_provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None,
+            )
+            if show_progress:
+                print()
+            if candles and len(candles) > 100:
+                print(f"    Loaded {len(candles)} candles from CryptoCompare")
+                return candles
+        except Exception as e:
+            print(f"    CryptoCompare failed: {e}")
+
+        # Source 3: Kraken REST API (~720 candles max)
+        print(f"    Falling back to Kraken REST API...")
         kraken_dm = HistoricalDataManager(
             cache_dir=self.config.cache_dir,
             use_cache=True,
@@ -497,13 +520,12 @@ class ScalpingOptimizer:
         )
         if show_progress:
             print()
-
-        # If Kraken returned data, use it
         if candles and len(candles) > 100:
+            print(f"    Loaded {len(candles)} candles from Kraken REST API")
             return candles
 
-        # Fallback to CCXT/Binance for pairs not available on Kraken
-        print(f"    Kraken returned insufficient data, falling back to Binance via CCXT...")
+        # Source 4: CCXT/Binance fallback
+        print(f"    Trying Binance via CCXT...")
         try:
             provider = CCXTDataProvider(
                 cache_dir=self.config.cache_dir, use_cache=True
@@ -1094,13 +1116,12 @@ def parse_args():
     parser.add_argument(
         "--interval", type=int, default=240,
         choices=[1, 5, 15, 30, 60, 240, 1440],
-        help="Candle interval in minutes (default: 240=4h). NOTE: Kraken limits: "
-             "1h=~30 days, 4h=~120 days, daily=~365 days of history"
+        help="Candle interval in minutes (default: 240=4h)"
     )
     parser.add_argument(
-        "--days", type=int, default=120,
-        help="Days of historical data (default: 120). Kraken caps at ~720 candles "
-             "per interval, so 4h candles max ~120 days"
+        "--days", type=int, default=365,
+        help="Days of historical data (default: 365). With Kraken CSV files or "
+             "CryptoCompare API, full year+ of data is available"
     )
     parser.add_argument(
         "--per-pair", action="store_true",
