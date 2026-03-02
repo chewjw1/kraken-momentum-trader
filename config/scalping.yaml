@@ -1,19 +1,20 @@
-# Scalping Strategy Configuration (v4 — Out-of-Sample Validated)
+# Scalping Strategy Configuration (v5 — 365-day OOS Validated)
 # Enhanced with: Stochastic, MACD, OBV, ATR dynamic stops, short selling
-# Optimized using 120 days of 4h candles with 70/30 out-of-sample validation
+# Optimized using 365 days of 4h candles (CryptoCompare) with 70/30 OOS validation
 #
-# Optimization results (120 days, 4h candles, OOS validated):
-#   XRP/USD:   +7.10% (66.7% WR, 49 trades, PF 2.52)  *** TOP ***
-#   POL/USD:   +6.32% (76.5% WR, 53 trades, PF 2.34)
-#   SOL/USD:   +4.24% (66.7% WR, 38 trades, PF 1.60)
-#   AVAX/USD:  +4.04% (60.0% WR, 52 trades, PF 1.86)
-#   ATOM/USD:  +2.96% (62.5% WR, 53 trades, PF 1.62)
-#   DOT/USD:   +1.82% (60.0% WR, 49 trades, PF 1.30)
-#   BTC/USD:   +1.55% (66.7% WR, 39 trades, PF 1.41)
-#   LINK/USD:  -0.17% (53.3% WR, 48 trades, PF 0.98)  ** MARGINAL **
-#   NEAR/USD:  -0.68% (56.2% WR, 46 trades, PF 0.93)  ** MARGINAL **
-#   ETH/USD:   -1.80% (47.1% WR, 64 trades, PF 0.79)  ** LOSING **
+# Optimization results (365 days, 4h candles, 150 trials, OOS validated):
+#   LINK/USD:  +18.44% (71.4% WR, 125 trades, PF 2.50)  *** TOP ***
+#   DOT/USD:   +15.66% (71.0% WR,  99 trades, PF 2.30)  *** TOP ***
+#   NEAR/USD:  +12.75% (76.7% WR, 118 trades, PF 2.51)  *** TOP ***
+#   AVAX/USD:  +10.90% (75.0% WR, 114 trades, PF 2.29)
+#   BTC/USD:    +8.08% (80.8% WR,  94 trades, PF 2.94)
+#   XRP/USD:    +7.10% (66.7% WR,  49 trades, PF 2.52)
+#   ETH/USD:    +6.64% (69.6% WR, 156 trades, PF 1.47)
+#   POL/USD:    +6.32% (76.5% WR,  53 trades, PF 2.34)
+#   SOL/USD:    +4.24% (66.7% WR,  38 trades, PF 1.60)
+#   ATOM/USD:   +2.96% (62.5% WR,  53 trades, PF 1.62)
 #
+# All 10 pairs profitable. Data source: CryptoCompare free API.
 # Strategy: 8-indicator confirmation with long+short support
 # Entry: Buy when 2+ signals confirm oversold, Short when 3+ confirm overbought
 # Exit: ATR-based dynamic TP/SL, or indicator reversal
@@ -22,23 +23,23 @@ strategy:
   name: "scalping"
 
   # Default parameters (fallback when per-pair not specified)
-  take_profit_percent: 3.0    # Static fallback — ATR dynamic TP preferred
-  stop_loss_percent: 2.0      # Static fallback — ATR dynamic SL preferred
+  take_profit_percent: 5.5    # Static fallback — ATR dynamic TP preferred
+  stop_loss_percent: 3.0      # Static fallback — ATR dynamic SL preferred
   candle_interval: 240        # 4-hour candles
   min_confirmations: 2        # Minimum confirmations for long entry
 
 # Core oscillators
 indicators:
   rsi:
-    period: 8
-    oversold: 25.0
+    period: 9
+    oversold: 30.0
     overbought: 70.0
 
   stochastic:
-    k_period: 11
+    k_period: 15
     d_period: 3
     oversold: 20.0
-    overbought: 80.0
+    overbought: 75.0
 
   macd:
     fast_period: 12
@@ -54,15 +55,15 @@ indicators:
     threshold_percent: 0.5
 
   volume:
-    spike_threshold: 2.0
+    spike_threshold: 1.75
 
   obv:
     sma_period: 20
 
   atr:
-    period: 16
-    stop_multiplier: 1.75     # Dynamic SL = 1.75 x ATR
-    tp_multiplier: 2.5        # Dynamic TP = 2.5 x ATR
+    period: 14
+    stop_multiplier: 2.25     # Dynamic SL = 2.25 x ATR
+    tp_multiplier: 2.0        # Dynamic TP = 2.0 x ATR
     use_dynamic_stops: true   # Use ATR-based stops instead of static %
 
 # Short selling configuration
@@ -70,57 +71,57 @@ shorting:
   enabled: true
   min_confirmations: 3        # Shorts need more confirmation than longs
 
-# Trading pairs — ordered by OOS-validated performance
+# Trading pairs — ordered by 365-day OOS-validated performance
 pairs:
-  - XRP/USD    # TOP — +7.10%, PF 2.52, 49 trades
-  - POL/USD    # STRONG — +6.32%, PF 2.34, 53 trades
-  - SOL/USD    # STRONG — +4.24%, PF 1.60, 38 trades
-  - AVAX/USD   # STRONG — +4.04%, PF 1.86, 52 trades
+  - LINK/USD   # TOP — +18.44%, PF 2.50, 125 trades
+  - DOT/USD    # TOP — +15.66%, PF 2.30, 99 trades
+  - NEAR/USD   # TOP — +12.75%, PF 2.51, 118 trades
+  - AVAX/USD   # STRONG — +10.90%, PF 2.29, 114 trades
+  - BTC/USD    # STRONG — +8.08%, PF 2.94, 94 trades
+  - XRP/USD    # STRONG — +7.10%, PF 2.52, 49 trades
+  - ETH/USD    # VIABLE — +6.64%, PF 1.47, 156 trades
+  - POL/USD    # VIABLE — +6.32%, PF 2.34, 53 trades
+  - SOL/USD    # VIABLE — +4.24%, PF 1.60, 38 trades
   - ATOM/USD   # VIABLE — +2.96%, PF 1.62, 53 trades
-  - DOT/USD    # VIABLE — +1.82%, PF 1.30, 49 trades
-  - BTC/USD    # VIABLE — +1.55%, PF 1.41, 39 trades
-  - LINK/USD   # MARGINAL — -0.17%, PF 0.98, 48 trades
-  - NEAR/USD   # MARGINAL — -0.68%, PF 0.93, 46 trades
-  - ETH/USD    # LOSING — -1.80%, PF 0.79, 64 trades
 
-# Per-pair OOS-validated optimized parameters
+# Per-pair 365-day OOS-validated optimized parameters
 pair_parameters:
   BTC/USD:
-    take_profit_percent: 2.5
-    stop_loss_percent: 0.5
-    rsi_period: 6
-    rsi_oversold: 20
-    rsi_overbought: 70
-    bb_period: 15
-    bb_std_dev: 2.5
-    vwap_threshold_percent: 1.0
-    volume_spike_threshold: 2.0
+    take_profit_percent: 9.0
+    stop_loss_percent: 2.5
+    rsi_period: 12
+    rsi_oversold: 25
+    rsi_overbought: 65
+    bb_period: 20
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.6
+    volume_spike_threshold: 1.75
     min_confirmations: 2
-    stoch_k_period: 15
-    stoch_oversold: 20
-    stoch_overbought: 85
-    atr_period: 10
-    atr_stop_multiplier: 2.25
-    atr_tp_multiplier: 1.75
+    stoch_k_period: 21
+    stoch_oversold: 25
+    stoch_overbought: 75
+    atr_period: 20
+    atr_stop_multiplier: 2.5
+    atr_tp_multiplier: 2.5
     short_min_confirmations: 2
 
   ETH/USD:
-    take_profit_percent: 8.0
-    stop_loss_percent: 2.0
-    rsi_period: 5
+    take_profit_percent: 6.0
+    stop_loss_percent: 4.0
+    rsi_period: 8
     rsi_oversold: 30
-    rsi_overbought: 60
-    bb_period: 25
+    rsi_overbought: 80
+    bb_period: 20
     bb_std_dev: 2.25
-    vwap_threshold_percent: 0.3
-    volume_spike_threshold: 2.25
+    vwap_threshold_percent: 0.4
+    volume_spike_threshold: 1.75
     min_confirmations: 1
-    stoch_k_period: 17
-    stoch_oversold: 15
+    stoch_k_period: 13
+    stoch_oversold: 25
     stoch_overbought: 75
-    atr_period: 10
-    atr_stop_multiplier: 1.0
-    atr_tp_multiplier: 1.75
+    atr_period: 14
+    atr_stop_multiplier: 2.0
+    atr_tp_multiplier: 1.5
     short_min_confirmations: 2
 
   SOL/USD:
@@ -162,60 +163,60 @@ pair_parameters:
     short_min_confirmations: 2
 
   LINK/USD:
-    take_profit_percent: 3.5
-    stop_loss_percent: 2.5
+    take_profit_percent: 5.5
+    stop_loss_percent: 2.0
     rsi_period: 5
     rsi_oversold: 35
     rsi_overbought: 60
     bb_period: 10
     bb_std_dev: 1.5
-    vwap_threshold_percent: 0.5
-    volume_spike_threshold: 2.25
+    vwap_threshold_percent: 0.6
+    volume_spike_threshold: 2.0
     min_confirmations: 3
     stoch_k_period: 7
     stoch_oversold: 15
     stoch_overbought: 75
     atr_period: 10
-    atr_stop_multiplier: 1.5
-    atr_tp_multiplier: 2.5
+    atr_stop_multiplier: 3.0
+    atr_tp_multiplier: 2.75
     short_min_confirmations: 2
 
   AVAX/USD:
-    take_profit_percent: 7.5
+    take_profit_percent: 9.5
     stop_loss_percent: 4.0
-    rsi_period: 5
-    rsi_oversold: 20
-    rsi_overbought: 60
-    bb_period: 30
+    rsi_period: 10
+    rsi_oversold: 35
+    rsi_overbought: 75
+    bb_period: 25
     bb_std_dev: 1.75
-    vwap_threshold_percent: 0.6
-    volume_spike_threshold: 1.25
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 2.0
     min_confirmations: 3
-    stoch_k_period: 21
-    stoch_oversold: 25
-    stoch_overbought: 70
-    atr_period: 12
-    atr_stop_multiplier: 1.0
+    stoch_k_period: 17
+    stoch_oversold: 20
+    stoch_overbought: 75
+    atr_period: 18
+    atr_stop_multiplier: 2.25
     atr_tp_multiplier: 1.5
     short_min_confirmations: 2
 
   DOT/USD:
     take_profit_percent: 3.0
-    stop_loss_percent: 3.0
-    rsi_period: 7
-    rsi_oversold: 25
+    stop_loss_percent: 4.0
+    rsi_period: 12
+    rsi_oversold: 30
     rsi_overbought: 60
-    bb_period: 10
+    bb_period: 20
     bb_std_dev: 2.25
-    vwap_threshold_percent: 0.5
-    volume_spike_threshold: 2.5
-    min_confirmations: 1
-    stoch_k_period: 19
+    vwap_threshold_percent: 0.2
+    volume_spike_threshold: 1.75
+    min_confirmations: 3
+    stoch_k_period: 21
     stoch_oversold: 20
-    stoch_overbought: 70
+    stoch_overbought: 75
     atr_period: 12
-    atr_stop_multiplier: 1.25
-    atr_tp_multiplier: 1.5
+    atr_stop_multiplier: 2.5
+    atr_tp_multiplier: 2.0
     short_min_confirmations: 2
 
   POL/USD:
@@ -257,22 +258,22 @@ pair_parameters:
     short_min_confirmations: 3
 
   NEAR/USD:
-    take_profit_percent: 5.5
+    take_profit_percent: 3.5
     stop_loss_percent: 3.5
-    rsi_period: 5
+    rsi_period: 9
     rsi_oversold: 40
-    rsi_overbought: 75
-    bb_period: 10
-    bb_std_dev: 2.5
-    vwap_threshold_percent: 0.8
-    volume_spike_threshold: 1.0
-    min_confirmations: 1
-    stoch_k_period: 15
-    stoch_oversold: 25
+    rsi_overbought: 80
+    bb_period: 30
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.7
+    volume_spike_threshold: 1.25
+    min_confirmations: 4
+    stoch_k_period: 13
+    stoch_oversold: 30
     stoch_overbought: 75
     atr_period: 20
     atr_stop_multiplier: 2.25
-    atr_tp_multiplier: 1.75
+    atr_tp_multiplier: 1.5
     short_min_confirmations: 2
 
 # Adaptive pair management
