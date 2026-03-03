@@ -103,28 +103,30 @@ def run_mtf_backtest(
     fee_pct: float = 0.0016,
     slippage_pct: float = 0.02,
     lookback_4h: int = 50,
+    signal_interval: int = 240,
 ) -> Dict:
     """
     Multi-timeframe backtest.
 
-    1. Aggregate 1m -> 4h candles
-    2. Generate signals on 4h candles
+    1. Aggregate 1m -> signal_interval candles (4h or 12h)
+    2. Generate signals on aggregated candles
     3. On signal, enter at next 1m candle open (with slippage)
     4. Check stops/TPs every 1-minute candle
     """
-    # Step 1: Aggregate
-    candles_4h = aggregate_to_4h(candles_1m)
+    # Step 1: Aggregate to signal interval
+    candles_4h = aggregate_to_4h(candles_1m, interval_min=signal_interval)
+    hours = signal_interval // 60
 
     if len(candles_4h) < lookback_4h + 10:
-        return {"pair": pair, "error": f"Only {len(candles_4h)} 4h candles"}
+        return {"pair": pair, "error": f"Only {len(candles_4h)} {hours}h candles"}
 
-    # Build index: 4h timestamp -> slice of 1m candles
+    # Build index: signal candle timestamp -> slice of 1m candles
     candle_1m_by_4h = {}
     c4h_idx = 0
     for i, c1m in enumerate(candles_1m):
         ts = c1m.timestamp
         bucket = ts.replace(
-            hour=(ts.hour // 4) * 4,
+            hour=(ts.hour // hours) * hours,
             minute=0, second=0, microsecond=0
         )
         if bucket not in candle_1m_by_4h:
@@ -148,6 +150,11 @@ def run_mtf_backtest(
     dynamic_sl = scalping_config.stop_loss_percent
     dynamic_tp = scalping_config.take_profit_percent
 
+    # Trailing stop state
+    trailing_stop_price = 0.0  # Current trailing stop level
+    best_price = 0.0  # Best price seen since entry (high for long, low for short)
+    breakeven_triggered = False
+
     # Iterate 4h candles for signals
     for i4h in range(lookback_4h, len(candles_4h)):
         candle_4h = candles_4h[i4h]
@@ -167,25 +174,45 @@ def run_mtf_backtest(
             continue
 
         if in_position:
-            # Check stops on every 1-minute candle in this 4h window
+            # Check stops on every 1-minute candle in this signal window
             for midx in minute_indices:
                 c1m = candles_1m[midx]
 
                 if pos_side == "long":
-                    # Check stop loss (did low breach SL?)
-                    sl_price = entry_price * (1 - dynamic_sl / 100)
                     tp_price = entry_price * (1 + dynamic_tp / 100)
 
-                    if c1m.low <= sl_price:
-                        exit_price = sl_price * (1 - slippage_pct / 100)
+                    # Update best price seen
+                    if c1m.high > best_price:
+                        best_price = c1m.high
+
+                    # Trailing stop logic
+                    unrealized_pct = ((best_price - entry_price) / entry_price) * 100
+                    tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+                    if tp_progress >= 0.6:
+                        # Trail at 50% of best unrealized profit
+                        trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                        trailing_stop_price = max(trailing_stop_price, trail_price)
+                    elif tp_progress >= 0.4 and not breakeven_triggered:
+                        # Move stop to breakeven (entry + fees)
+                        trailing_stop_price = entry_price * (1 + fee_pct * 100 * 2 / 100 + 0.05)
+                        breakeven_triggered = True
+
+                    # Effective stop: max of original SL and trailing stop
+                    original_sl = entry_price * (1 - dynamic_sl / 100)
+                    effective_sl = max(original_sl, trailing_stop_price)
+
+                    if c1m.low <= effective_sl:
+                        exit_price = effective_sl * (1 - slippage_pct / 100)
                         gross_pnl = ((exit_price - entry_price) / entry_price) * 100
                         net_pnl = gross_pnl - fee_pct * 100 * 2
                         pnl_usd = pos_size_usd * (net_pnl / 100)
                         capital += pnl_usd
                         hold_min = int((c1m.timestamp - entry_time).total_seconds() / 60)
+                        reason = "trailing_stop_1m" if trailing_stop_price > original_sl else "stop_loss_1m"
                         trades.append(MTFTrade(pair, "long", entry_time, c1m.timestamp,
                                                entry_price, exit_price, net_pnl,
-                                               "stop_loss_1m", hold_min, signal_candle_time))
+                                               reason, hold_min, signal_candle_time))
                         in_position = False
                         break
 
@@ -203,19 +230,38 @@ def run_mtf_backtest(
                         break
 
                 else:  # short
-                    sl_price = entry_price * (1 + dynamic_sl / 100)
                     tp_price = entry_price * (1 - dynamic_tp / 100)
 
-                    if c1m.high >= sl_price:
-                        exit_price = sl_price * (1 + slippage_pct / 100)
+                    # Update best price (lowest for shorts)
+                    if best_price == 0.0 or c1m.low < best_price:
+                        best_price = c1m.low
+
+                    # Trailing stop logic for shorts
+                    unrealized_pct = ((entry_price - best_price) / entry_price) * 100
+                    tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+                    if tp_progress >= 0.6:
+                        trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                        if trailing_stop_price == 0.0 or trail_price < trailing_stop_price:
+                            trailing_stop_price = trail_price
+                    elif tp_progress >= 0.4 and not breakeven_triggered:
+                        trailing_stop_price = entry_price * (1 - fee_pct * 100 * 2 / 100 - 0.05)
+                        breakeven_triggered = True
+
+                    original_sl = entry_price * (1 + dynamic_sl / 100)
+                    effective_sl = min(original_sl, trailing_stop_price) if trailing_stop_price > 0 else original_sl
+
+                    if c1m.high >= effective_sl:
+                        exit_price = effective_sl * (1 + slippage_pct / 100)
                         gross_pnl = ((entry_price - exit_price) / entry_price) * 100
                         net_pnl = gross_pnl - fee_pct * 100 * 2
                         pnl_usd = pos_size_usd * (net_pnl / 100)
                         capital += pnl_usd
                         hold_min = int((c1m.timestamp - entry_time).total_seconds() / 60)
+                        reason = "trailing_stop_1m" if trailing_stop_price > 0 and trailing_stop_price < original_sl else "stop_loss_1m"
                         trades.append(MTFTrade(pair, "short", entry_time, c1m.timestamp,
                                                entry_price, exit_price, net_pnl,
-                                               "stop_loss_1m", hold_min, signal_candle_time))
+                                               reason, hold_min, signal_candle_time))
                         in_position = False
                         break
 
@@ -283,6 +329,11 @@ def run_mtf_backtest(
                         pos_size_usd = capital * position_size_pct
                         in_position = True
 
+                        # Reset trailing stop state
+                        trailing_stop_price = 0.0
+                        best_price = entry_price
+                        breakeven_triggered = False
+
                         # Calculate ATR-based dynamic stops
                         atr_values = []
                         for j in range(max(0, len(lookback) - scalping_config.atr_period), len(lookback)):
@@ -302,7 +353,7 @@ def run_mtf_backtest(
             "pair": pair, "total_pnl_pct": 0, "trades": 0, "wins": 0,
             "win_rate": 0, "profit_factor": 0, "max_dd_pct": 0,
             "sharpe": 0, "avg_hold_min": 0, "sl_exits": 0, "tp_exits": 0,
-            "signal_exits": 0, "final_capital": capital,
+            "trail_exits": 0, "signal_exits": 0, "final_capital": capital,
         }
 
     wins = sum(1 for t in trades if t.pnl_pct > 0)
@@ -332,8 +383,9 @@ def run_mtf_backtest(
     else:
         sharpe = 0
 
-    sl_exits = sum(1 for t in trades if "stop_loss" in t.exit_reason)
+    sl_exits = sum(1 for t in trades if t.exit_reason == "stop_loss_1m")
     tp_exits = sum(1 for t in trades if "take_profit" in t.exit_reason)
+    trail_exits = sum(1 for t in trades if "trailing_stop" in t.exit_reason)
     signal_exits = sum(1 for t in trades if "signal_exit" in t.exit_reason)
     avg_hold = sum(t.hold_minutes for t in trades) / len(trades)
 
@@ -350,6 +402,7 @@ def run_mtf_backtest(
         "avg_hold_min": avg_hold,
         "sl_exits": sl_exits,
         "tp_exits": tp_exits,
+        "trail_exits": trail_exits,
         "signal_exits": signal_exits,
         "final_capital": capital,
         "long_trades": sum(1 for t in trades if t.side == "long"),
@@ -416,13 +469,17 @@ def main():
             short_min_confirmations=pp.get("short_min_confirmations", 3),
         )
 
-        print(f"  Running MTF backtest...", end="", flush=True)
+        # Per-pair signal interval (4h default, 12h for some pairs)
+        pair_interval = pp.get("candle_interval", config.get("strategy", {}).get("candle_interval", 240))
+        interval_label = f"{pair_interval // 60}h"
+        print(f"  Running MTF backtest ({interval_label} signals)...", end="", flush=True)
         r = run_mtf_backtest(
             pair, candles_1m, sc,
             initial_capital=10000.0,
             position_size_pct=0.20,
             fee_pct=args.fee / 100,
             slippage_pct=args.slippage,
+            signal_interval=pair_interval,
         )
         results.append(r)
 
@@ -439,7 +496,7 @@ def main():
         print(f"    {pair:>10}: {r['total_pnl_pct']:+7.2f}%  |  {r['trades']:>3} trades  "
               f"|  {r['win_rate']:.1f}% WR  |  PF {r['profit_factor']:.2f}  "
               f"|  DD {r['max_dd_pct']:.1f}%  |  Sharpe {r['sharpe']:.2f}  [{status}]")
-        print(f"               Exits: {r['tp_exits']} TP / {r['sl_exits']} SL / {r['signal_exits']} signal  "
+        print(f"               Exits: {r['tp_exits']} TP / {r['sl_exits']} SL / {r['trail_exits']} trail / {r['signal_exits']} signal  "
               f"|  Avg hold: {r['avg_hold_min']:.0f}m  |  L:{r['long_trades']} S:{r['short_trades']}")
 
     print()
