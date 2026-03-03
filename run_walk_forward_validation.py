@@ -23,7 +23,7 @@ import argparse
 import sys
 import os
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 
 # Add project root to path
@@ -76,7 +76,8 @@ def get_current_params(config: dict, pair: str) -> Dict[str, Any]:
     }
 
 
-def quick_optimize(candles: List[OHLC], pair: str, n_trials: int = 50) -> Dict[str, Any]:
+def quick_optimize(candles: List[OHLC], pair: str, n_trials: int = 50,
+                   regime_candles: Optional[List[OHLC]] = None) -> Dict[str, Any]:
     """Run a quick Optuna optimization and return best params."""
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -96,7 +97,7 @@ def quick_optimize(candles: List[OHLC], pair: str, n_trials: int = 50) -> Dict[s
             else:
                 params[name] = trial.suggest_float(name, ranges["low"], ranges["high"], step=ranges.get("step"))
 
-        metrics = runner.run(candles, pair, params)
+        metrics = runner.run(candles, pair, params, regime_candles=regime_candles)
         return metrics.get("score", float("-inf"))
 
     study = optuna.create_study(direction="maximize")
@@ -105,14 +106,15 @@ def quick_optimize(candles: List[OHLC], pair: str, n_trials: int = 50) -> Dict[s
     return study.best_params
 
 
-def run_backtest(candles: List[OHLC], pair: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def run_backtest(candles: List[OHLC], pair: str, params: Dict[str, Any],
+                 regime_candles: Optional[List[OHLC]] = None) -> Dict[str, Any]:
     """Run backtest with given params."""
     runner = ScalpingBacktestRunner(
         initial_capital=10000.0,
         position_size_percent=20.0,
         fee_percent=0.16
     )
-    return runner.run(candles, pair, params)
+    return runner.run(candles, pair, params, regime_candles=regime_candles)
 
 
 def main():
@@ -127,6 +129,11 @@ def main():
 
     end = datetime(2026, 3, 2, tzinfo=timezone.utc)
     start = datetime(2024, 3, 2, tzinfo=timezone.utc)
+
+    # Load BTC data once for regime detection (matches live trader)
+    print("  Loading BTC/USD for regime reference...", end="", flush=True)
+    btc_candles = load_pair_data("BTC/USD", start, end)
+    print(f" {len(btc_candles)} candles")
 
     # Define 6-month windows
     windows = [
@@ -168,11 +175,12 @@ def main():
 
         for wname, wstart, wend in windows:
             window_candles = [c for c in candles if wstart <= c.timestamp < wend]
+            btc_window = [c for c in btc_candles if wstart <= c.timestamp < wend]
             if len(window_candles) < 100:
                 pair_window_results[pair].append({"window": wname, "return": 0, "trades": 0, "wr": 0})
                 continue
 
-            metrics = run_backtest(window_candles, pair, params)
+            metrics = run_backtest(window_candles, pair, params, regime_candles=btc_window)
             r = metrics.get("total_return", 0) * 100
             trades = metrics.get("total_trades", 0)
             wr = metrics.get("win_rate", 0)
@@ -222,6 +230,8 @@ def main():
 
             train_candles = [c for c in candles if train_start <= c.timestamp < train_end]
             test_candles = [c for c in candles if test_start <= c.timestamp < test_end]
+            btc_train = [c for c in btc_candles if train_start <= c.timestamp < train_end]
+            btc_test = [c for c in btc_candles if test_start <= c.timestamp < test_end]
 
             if len(train_candles) < 100 or len(test_candles) < 100:
                 print(f"    {pair}: insufficient data")
@@ -229,11 +239,12 @@ def main():
                 continue
 
             # Optimize on training window
-            best_params = quick_optimize(train_candles, pair, n_trials=args.trials)
+            best_params = quick_optimize(train_candles, pair, n_trials=args.trials,
+                                         regime_candles=btc_train)
 
             # Test on completely unseen data
-            train_metrics = run_backtest(train_candles, pair, best_params)
-            test_metrics = run_backtest(test_candles, pair, best_params)
+            train_metrics = run_backtest(train_candles, pair, best_params, regime_candles=btc_train)
+            test_metrics = run_backtest(test_candles, pair, best_params, regime_candles=btc_test)
 
             train_r = train_metrics.get("total_return", 0) * 100
             test_r = test_metrics.get("total_return", 0) * 100

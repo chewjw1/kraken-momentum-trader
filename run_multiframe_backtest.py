@@ -19,6 +19,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict
 from src.backtest.kraken_csv_provider import KrakenCSVProvider
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
+from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
 from src.strategy.base_strategy import MarketData, Position
 from src.exchange.kraken_client import OHLC
 
@@ -105,6 +106,7 @@ def run_mtf_backtest(
     lookback_4h: int = 50,
     signal_interval: int = 240,
     trailing_stops_enabled: bool = False,
+    regime_detection: bool = True,
 ) -> Dict:
     """
     Multi-timeframe backtest.
@@ -135,9 +137,14 @@ def run_mtf_backtest(
         candle_1m_by_4h[bucket].append(i)
 
     strategy = ScalpingStrategy(scalping_config)
+    base_config = scalping_config  # Save for regime rebuilds
     trades: List[MTFTrade] = []
     capital = initial_capital
     peak_capital = capital
+
+    # Regime detection state
+    regime_detector = RegimeDetector(RegimeConfig()) if regime_detection else None
+    current_regime = MarketRegime.UNKNOWN
 
     # Position state
     in_position = False
@@ -167,6 +174,46 @@ def run_mtf_backtest(
             volumes=[c.volume for c in lookback],
             ticker=None
         )
+
+        # Regime detection every 50 candles (matching optimizer behavior)
+        if regime_detector and i4h % 50 == 0 and i4h >= 200:
+            all_4h = candles_4h[:i4h + 1]
+            r_closes = [c.close for c in all_4h]
+            r_highs = [c.high for c in all_4h]
+            r_lows = [c.low for c in all_4h]
+            result = regime_detector.detect(r_closes, r_highs, r_lows)
+            if result.regime != current_regime:
+                current_regime = result.regime
+                adj = REGIME_ADJUSTMENTS.get(current_regime, REGIME_ADJUSTMENTS[MarketRegime.UNKNOWN])
+                tp_mult = adj.get('take_profit_multiplier', 1.0)
+                sl_mult = adj.get('stop_loss_multiplier', 1.0)
+                conf_offset = adj.get('min_confirmations_offset', 0)
+                ema_enabled = adj.get('ema_filter_enabled', True)
+                adjusted_config = ScalpingConfig(
+                    take_profit_percent=base_config.take_profit_percent * tp_mult,
+                    stop_loss_percent=base_config.stop_loss_percent * sl_mult,
+                    rsi_period=base_config.rsi_period,
+                    rsi_oversold=base_config.rsi_oversold,
+                    rsi_overbought=base_config.rsi_overbought,
+                    bb_period=base_config.bb_period,
+                    bb_std_dev=base_config.bb_std_dev,
+                    vwap_threshold_percent=base_config.vwap_threshold_percent,
+                    volume_spike_threshold=base_config.volume_spike_threshold,
+                    min_confirmations=max(1, base_config.min_confirmations + conf_offset),
+                    fee_percent=base_config.fee_percent,
+                    ema_filter_enabled=ema_enabled,
+                    stoch_k_period=base_config.stoch_k_period,
+                    stoch_d_period=base_config.stoch_d_period,
+                    stoch_oversold=base_config.stoch_oversold,
+                    stoch_overbought=base_config.stoch_overbought,
+                    atr_period=base_config.atr_period,
+                    atr_stop_multiplier=base_config.atr_stop_multiplier,
+                    atr_tp_multiplier=base_config.atr_tp_multiplier,
+                    use_atr_stops=base_config.use_atr_stops,
+                    shorting_enabled=base_config.shorting_enabled,
+                    short_min_confirmations=base_config.short_min_confirmations,
+                )
+                strategy = ScalpingStrategy(adjusted_config)
 
         # Get 1-minute candles for this 4h period
         bucket_ts = candle_4h.timestamp
@@ -468,6 +515,7 @@ def main():
             slippage_pct=args.slippage,
             signal_interval=pair_interval,
             trailing_stops_enabled=config.get("trailing_stops", {}).get("enabled", False),
+            regime_detection=True,
         )
         results.append(r)
 

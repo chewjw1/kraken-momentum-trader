@@ -111,7 +111,7 @@ class ScalpingBacktestRunner:
         self,
         initial_capital: float = 10000.0,
         position_size_percent: float = 20.0,
-        fee_percent: float = 0.26,
+        fee_percent: float = 0.16,
         trailing_stops_enabled: bool = False,
     ):
         self.initial_capital = initial_capital
@@ -123,10 +123,15 @@ class ScalpingBacktestRunner:
         self,
         candles: List[OHLC],
         pair: str,
-        params: Dict[str, Any]
+        params: Dict[str, Any],
+        regime_candles: Optional[List[OHLC]] = None,
     ) -> Dict[str, Any]:
         """
         Run a backtest with given parameters.
+
+        Args:
+            regime_candles: Optional candles for regime detection (e.g. BTC/USD).
+                            If None, uses the traded pair's own candles.
 
         Returns:
             Dictionary with metrics: total_return, sharpe_ratio, win_rate, etc.
@@ -187,7 +192,9 @@ class ScalpingBacktestRunner:
         for i in range(lookback, len(candles)):
             # Detect regime every 50 candles and adjust strategy
             if i % 50 == 0 and i >= 200:
-                all_candles_so_far = candles[:i + 1]
+                # Use BTC candles for regime if available (matches live trader)
+                r_source = regime_candles if regime_candles else candles
+                all_candles_so_far = r_source[:min(i + 1, len(r_source))]
                 closes = [c.close for c in all_candles_so_far]
                 highs = [c.high for c in all_candles_so_far]
                 lows = [c.low for c in all_candles_so_far]
@@ -670,11 +677,16 @@ class ScalpingOptimizer:
             fee_percent=self.config.fee_percent
         )
 
+        # Use BTC/USD as regime reference (matches live trader)
+        btc_candles = self._historical_data.get("BTC/USD")
+        btc_train = btc_candles[:split_idx] if btc_candles else None
+        btc_val = btc_candles[split_idx:] if btc_candles else None
+
         # Run on training data
-        train_metrics = runner.run(train_candles, pair, params)
+        train_metrics = runner.run(train_candles, pair, params, regime_candles=btc_train)
 
         # Run on validation data (out-of-sample)
-        val_metrics = runner.run(val_candles, pair, params)
+        val_metrics = runner.run(val_candles, pair, params, regime_candles=btc_val)
 
         # Combined score: validation weighted more heavily
         train_score = train_metrics["score"]

@@ -618,7 +618,7 @@ class ScalpingTrader:
                 )
                 total_scale = scale * regime_scale
 
-                size_usd = self.initial_capital * (self.position_size_pct / 100) * total_scale
+                size_usd = self.capital * (self.position_size_pct / 100) * total_scale
 
                 if size_usd > available_capital:
                     self.logger.warning(
