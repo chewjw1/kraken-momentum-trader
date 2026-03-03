@@ -26,7 +26,7 @@ load_dotenv()
 
 import yaml
 
-from src.exchange.kraken_client import KrakenClient
+from src.exchange.kraken_client import KrakenClient, OrderSide, OrderType
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.base_strategy import MarketData, Position
 from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime
@@ -425,6 +425,95 @@ class ScalpingTrader:
             ema_filter=ema_enabled,
         )
 
+    def _execute_entry_order(self, pair: str, side: str, size: float, current_price: float) -> Optional[dict]:
+        """
+        Place an entry order on Kraken.
+
+        Uses maker (limit) orders when configured for better fees.
+        Falls back to market order if maker order fails.
+
+        Returns:
+            dict with order details, or None if order failed.
+        """
+        order_side = OrderSide.BUY if side == "long" else OrderSide.SELL
+        try:
+            if self.use_maker_orders:
+                order = self.client.place_maker_order(
+                    pair=pair,
+                    side=order_side,
+                    volume=size,
+                    price_offset_percent=self.maker_price_offset,
+                )
+            else:
+                order = self.client.place_order(
+                    pair=pair,
+                    side=order_side,
+                    order_type=OrderType.MARKET,
+                    volume=size,
+                )
+
+            self.logger.info(
+                f"ORDER PLACED for {pair}",
+                order_id=order.order_id,
+                side=order_side.value,
+                order_type=order.order_type.value,
+                volume=size,
+                price=order.price,
+                status=order.status,
+            )
+
+            fill_price = order.price or current_price
+            return {
+                'order_id': order.order_id,
+                'fill_price': fill_price,
+                'fill_volume': order.filled_volume or size,
+                'fee': order.fee,
+                'status': order.status,
+            }
+
+        except Exception as e:
+            self.logger.error(f"ENTRY ORDER FAILED for {pair}: {e}")
+            return None
+
+    def _execute_exit_order(self, pair: str, side: str, size: float) -> Optional[dict]:
+        """
+        Place an exit order on Kraken.
+
+        Always uses market orders for exits to guarantee fill.
+
+        Returns:
+            dict with order details, or None if order failed.
+        """
+        # To close: sell if long, buy if short
+        order_side = OrderSide.SELL if side == "long" else OrderSide.BUY
+        try:
+            order = self.client.place_order(
+                pair=pair,
+                side=order_side,
+                order_type=OrderType.MARKET,
+                volume=size,
+            )
+
+            self.logger.info(
+                f"EXIT ORDER PLACED for {pair}",
+                order_id=order.order_id,
+                side=order_side.value,
+                volume=size,
+                status=order.status,
+            )
+
+            return {
+                'order_id': order.order_id,
+                'fill_price': order.price,
+                'fill_volume': order.filled_volume or size,
+                'fee': order.fee,
+                'status': order.status,
+            }
+
+        except Exception as e:
+            self.logger.error(f"EXIT ORDER FAILED for {pair}: {e}")
+            return None
+
     def _get_strategy_for_pair(self, pair: str) -> ScalpingStrategy:
         """Get the strategy for a specific pair (per-pair or default)."""
         return self.pair_strategies.get(pair, self.strategy)
@@ -535,13 +624,37 @@ class ScalpingTrader:
                     exit_reason = signal.reason
 
             if should_exit:
-                # Exit position
+                # Execute exit order on Kraken
+                exit_order = self._execute_exit_order(pair, pos_side, position_data['size'])
+                if exit_order is None:
+                    self.logger.error(
+                        f"EXIT ORDER FAILED for {pair} — position still open, will retry next cycle",
+                        side=pos_side,
+                        reason=exit_reason,
+                    )
+                    return
+
+                # Use actual fill price if available, otherwise use current_price
+                exit_price = exit_order.get('fill_price') or current_price
+
+                # Calculate P&L from actual fill prices
+                entry_price = position.entry_price
                 if pos_side == "long":
-                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+                    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
                 else:
-                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
-                fee_pct = strategy_instance.config.fee_percent * 2
-                net_pnl_pct = pnl_pct - fee_pct
+                    pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+
+                # Use actual fee from order if available, otherwise estimate
+                actual_fee = exit_order.get('fee', 0.0)
+                entry_fee = position_data.get('entry_fee', 0.0)
+                if actual_fee > 0 or entry_fee > 0:
+                    total_fee_usd = actual_fee + entry_fee
+                    fee_pct_actual = (total_fee_usd / position_data['size_usd']) * 100
+                    net_pnl_pct = pnl_pct - fee_pct_actual
+                else:
+                    fee_pct = strategy_instance.config.fee_percent * 2
+                    net_pnl_pct = pnl_pct - fee_pct
+
                 pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
 
                 self.capital += pnl_usd
@@ -570,6 +683,9 @@ class ScalpingTrader:
                     f"CLOSED {pair}",
                     side=pos_side,
                     reason=exit_reason,
+                    exit_price=f"${exit_price:.2f}",
+                    entry_order=position_data.get('order_id', ''),
+                    exit_order=exit_order.get('order_id', ''),
                     pnl_pct=f"{net_pnl_pct:.2f}%",
                     pnl_usd=f"${pnl_usd:.2f}",
                     capital=f"${self.capital:.2f}",
@@ -630,25 +746,34 @@ class ScalpingTrader:
 
                 size = size_usd / current_price
 
+                # Execute order on Kraken
+                order_result = self._execute_entry_order(pair, pos_side, size, current_price)
+                if order_result is None:
+                    self.logger.error(f"Skipping {pair} entry — order execution failed")
+                    return
+
+                fill_price = order_result.get('fill_price', current_price)
+
                 self.positions[pair] = {
-                    'entry_price': current_price,
+                    'entry_price': fill_price,
                     'side': pos_side,
-                    'size': size,
+                    'size': order_result.get('fill_volume', size),
                     'size_usd': size_usd,
                     'entry_time': datetime.now(timezone.utc).isoformat(),
                     'reason': signal.reason,
                     'regime': self._current_regime.value,
-                    'best_price': current_price,
+                    'best_price': fill_price,
                     'trailing_stop': 0.0,
-                    'breakeven_triggered': False,
+                    'order_id': order_result.get('order_id', ''),
                 }
 
                 self.logger.info(
                     f"OPENED {pair}",
                     side=pos_side,
                     reason=signal.reason,
-                    price=f"${current_price:.2f}",
+                    price=f"${fill_price:.2f}",
                     size_usd=f"${size_usd:.2f}",
+                    order_id=order_result.get('order_id', ''),
                     scale=f"{total_scale:.2f}x (adaptive={scale:.2f} regime={regime_scale:.2f})",
                     regime=self._current_regime.value,
                     available_after=f"${available_capital - size_usd:.2f}"
