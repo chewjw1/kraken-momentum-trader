@@ -104,6 +104,7 @@ def run_mtf_backtest(
     slippage_pct: float = 0.02,
     lookback_4h: int = 50,
     signal_interval: int = 240,
+    trailing_stops_enabled: bool = False,
 ) -> Dict:
     """
     Multi-timeframe backtest.
@@ -181,19 +182,15 @@ def run_mtf_backtest(
                 if pos_side == "long":
                     tp_price = entry_price * (1 + dynamic_tp / 100)
 
-                    # Update best price seen
-                    if c1m.high > best_price:
-                        best_price = c1m.high
-
-                    # Trailing stop logic
-                    unrealized_pct = ((best_price - entry_price) / entry_price) * 100
-                    tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
-
-                    if tp_progress >= 0.5:
-                        # Trail at 50% of best unrealized profit
-                        trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
-                        trailing_stop_price = max(trailing_stop_price, trail_price)
-
+                    # Trailing stop logic (only when enabled)
+                    if trailing_stops_enabled:
+                        if c1m.high > best_price:
+                            best_price = c1m.high
+                        unrealized_pct = ((best_price - entry_price) / entry_price) * 100
+                        tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+                        if tp_progress >= 0.5:
+                            trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                            trailing_stop_price = max(trailing_stop_price, trail_price)
                     # Effective stop: max of original SL and trailing stop
                     original_sl = entry_price * (1 - dynamic_sl / 100)
                     effective_sl = max(original_sl, trailing_stop_price)
@@ -228,19 +225,16 @@ def run_mtf_backtest(
                 else:  # short
                     tp_price = entry_price * (1 - dynamic_tp / 100)
 
-                    # Update best price (lowest for shorts)
-                    if best_price == 0.0 or c1m.low < best_price:
-                        best_price = c1m.low
-
-                    # Trailing stop logic for shorts
-                    unrealized_pct = ((entry_price - best_price) / entry_price) * 100
-                    tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
-
-                    if tp_progress >= 0.5:
-                        trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
-                        if trailing_stop_price == 0.0 or trail_price < trailing_stop_price:
-                            trailing_stop_price = trail_price
-
+                    # Trailing stop logic for shorts (only when enabled)
+                    if trailing_stops_enabled:
+                        if best_price == 0.0 or c1m.low < best_price:
+                            best_price = c1m.low
+                        unrealized_pct = ((entry_price - best_price) / entry_price) * 100
+                        tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+                        if tp_progress >= 0.5:
+                            trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                            if trailing_stop_price == 0.0 or trail_price < trailing_stop_price:
+                                trailing_stop_price = trail_price
                     original_sl = entry_price * (1 + dynamic_sl / 100)
                     effective_sl = min(original_sl, trailing_stop_price) if trailing_stop_price > 0 else original_sl
 
@@ -473,6 +467,7 @@ def main():
             fee_pct=args.fee / 100,
             slippage_pct=args.slippage,
             signal_interval=pair_interval,
+            trailing_stops_enabled=config.get("trailing_stops", {}).get("enabled", False),
         )
         results.append(r)
 

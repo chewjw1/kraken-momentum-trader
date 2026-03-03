@@ -451,47 +451,42 @@ class ScalpingTrader:
             else:
                 pnl_pct = ((entry_price - current_price) / entry_price) * 100
 
-            # --- Trailing stop logic ---
-            best_price = position_data.get('best_price', entry_price)
-            trailing_stop = position_data.get('trailing_stop', 0.0)
-            breakeven_triggered = position_data.get('breakeven_triggered', False)
-
-            # Get dynamic TP for progress calculation
+            # --- Trailing stop logic (gated by config) ---
             strategy_instance = self._get_strategy_for_pair(pair)
-            dynamic_tp = strategy_instance.config.take_profit_percent
-            fee_cost = strategy_instance.config.fee_percent * 2
-
-            if pos_side == "long":
-                if current_price > best_price:
-                    best_price = current_price
-                unrealized_pct = ((best_price - entry_price) / entry_price) * 100
-            else:
-                if best_price == 0.0 or current_price < best_price:
-                    best_price = current_price
-                unrealized_pct = ((entry_price - best_price) / entry_price) * 100
-
-            tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
-
-            if tp_progress >= 0.5:
-                if pos_side == "long":
-                    trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
-                    trailing_stop = max(trailing_stop, trail_price)
-                else:
-                    trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
-                    trailing_stop = trail_price if trailing_stop == 0 else min(trailing_stop, trail_price)
-
-            # Update position tracking
-            position_data['best_price'] = best_price
-            position_data['trailing_stop'] = trailing_stop
-            position_data['breakeven_triggered'] = breakeven_triggered
-
-            # Check trailing stop hit
             trailing_stop_hit = False
-            if trailing_stop > 0:
-                if pos_side == "long" and current_price <= trailing_stop:
-                    trailing_stop_hit = True
-                elif pos_side == "short" and current_price >= trailing_stop:
-                    trailing_stop_hit = True
+            trailing_stop = position_data.get('trailing_stop', 0.0)
+
+            if self.trailing_stops_enabled:
+                best_price = position_data.get('best_price', entry_price)
+                dynamic_tp = strategy_instance.config.take_profit_percent
+
+                if pos_side == "long":
+                    if current_price > best_price:
+                        best_price = current_price
+                    unrealized_pct = ((best_price - entry_price) / entry_price) * 100
+                else:
+                    if best_price == 0.0 or current_price < best_price:
+                        best_price = current_price
+                    unrealized_pct = ((entry_price - best_price) / entry_price) * 100
+
+                tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+                if tp_progress >= 0.5:
+                    if pos_side == "long":
+                        trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                        trailing_stop = max(trailing_stop, trail_price)
+                    else:
+                        trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                        trailing_stop = trail_price if trailing_stop == 0 else min(trailing_stop, trail_price)
+
+                position_data['best_price'] = best_price
+                position_data['trailing_stop'] = trailing_stop
+
+                if trailing_stop > 0:
+                    if pos_side == "long" and current_price <= trailing_stop:
+                        trailing_stop_hit = True
+                    elif pos_side == "short" and current_price >= trailing_stop:
+                        trailing_stop_hit = True
 
             trail_info = f"trail=${trailing_stop:.2f}" if trailing_stop > 0 else "no trail"
             self.logger.info(

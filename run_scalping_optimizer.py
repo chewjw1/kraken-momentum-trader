@@ -111,11 +111,13 @@ class ScalpingBacktestRunner:
         self,
         initial_capital: float = 10000.0,
         position_size_percent: float = 20.0,
-        fee_percent: float = 0.26
+        fee_percent: float = 0.26,
+        trailing_stops_enabled: bool = False,
     ):
         self.initial_capital = initial_capital
         self.position_size_percent = position_size_percent
         self.fee_percent = fee_percent
+        self.trailing_stops_enabled = trailing_stops_enabled
 
     def run(
         self,
@@ -238,34 +240,33 @@ class ScalpingBacktestRunner:
             )
 
             if in_position:
-                # Trailing stop logic
-                if position_side == "long":
-                    if current.high > best_price:
-                        best_price = current.high
-                    unrealized_pct = ((best_price - entry_price) / entry_price) * 100
-                else:
-                    if best_price == 0.0 or current.low < best_price:
-                        best_price = current.low
-                    unrealized_pct = ((entry_price - best_price) / entry_price) * 100
-
-                dynamic_tp = config.take_profit_percent
-                tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
-
-                if tp_progress >= 0.5:
+                # Trailing stop logic (only when enabled)                trailing_hit = False
+                if self.trailing_stops_enabled:
                     if position_side == "long":
-                        trail = entry_price * (1 + unrealized_pct * 0.5 / 100)
-                        trailing_stop_price = max(trailing_stop_price, trail)
+                        if current.high > best_price:
+                            best_price = current.high
+                        unrealized_pct = ((best_price - entry_price) / entry_price) * 100
                     else:
-                        trail = entry_price * (1 - unrealized_pct * 0.5 / 100)
-                        trailing_stop_price = trail if trailing_stop_price == 0 else min(trailing_stop_price, trail)
+                        if best_price == 0.0 or current.low < best_price:
+                            best_price = current.low
+                        unrealized_pct = ((entry_price - best_price) / entry_price) * 100
 
-                # Check trailing stop hit
-                trailing_hit = False
-                if trailing_stop_price > 0:
-                    if position_side == "long" and current.low <= trailing_stop_price:
-                        trailing_hit = True
-                    elif position_side == "short" and current.high >= trailing_stop_price:
-                        trailing_hit = True
+                    dynamic_tp = strategy.config.take_profit_percent
+                    tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+                    if tp_progress >= 0.5:
+                        if position_side == "long":
+                            trail = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                            trailing_stop_price = max(trailing_stop_price, trail)
+                        else:
+                            trail = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                            trailing_stop_price = trail if trailing_stop_price == 0 else min(trailing_stop_price, trail)
+
+                    if trailing_stop_price > 0:
+                        if position_side == "long" and current.low <= trailing_stop_price:
+                            trailing_hit = True
+                        elif position_side == "short" and current.high >= trailing_stop_price:
+                            trailing_hit = True
 
                 position = Position(
                     pair=pair,
