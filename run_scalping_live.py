@@ -91,7 +91,16 @@ class ScalpingTrader:
                 vwap_threshold_percent=params.get('vwap_threshold_percent', default_config.vwap_threshold_percent),
                 volume_spike_threshold=params.get('volume_spike_threshold', default_config.volume_spike_threshold),
                 min_confirmations=params.get('min_confirmations', default_config.min_confirmations),
-                fee_percent=fee_rate
+                fee_percent=fee_rate,
+                stoch_k_period=params.get('stoch_k_period', default_config.stoch_k_period),
+                stoch_d_period=params.get('stoch_d_period', default_config.stoch_d_period),
+                stoch_oversold=params.get('stoch_oversold', default_config.stoch_oversold),
+                stoch_overbought=params.get('stoch_overbought', default_config.stoch_overbought),
+                atr_period=params.get('atr_period', default_config.atr_period),
+                atr_stop_multiplier=params.get('atr_stop_multiplier', default_config.atr_stop_multiplier),
+                atr_tp_multiplier=params.get('atr_tp_multiplier', default_config.atr_tp_multiplier),
+                shorting_enabled=params.get('shorting_enabled', default_config.shorting_enabled),
+                short_min_confirmations=params.get('short_min_confirmations', default_config.short_min_confirmations),
             )
             self.pair_strategies[pair] = ScalpingStrategy(pair_config)
 
@@ -127,8 +136,8 @@ class ScalpingTrader:
         self.regime_detector = RegimeDetector(RegimeConfig(
             fast_sma_period=regime_cfg.get('fast_sma_period', 50),
             slow_sma_period=regime_cfg.get('slow_sma_period', 200),
-            bull_slope_threshold=regime_cfg.get('bull_slope_threshold', 0.05),
-            bear_slope_threshold=regime_cfg.get('bear_slope_threshold', -0.05),
+            bull_slope_threshold=regime_cfg.get('bull_slope_threshold', 0.02),
+            bear_slope_threshold=regime_cfg.get('bear_slope_threshold', -0.02),
         ))
         self._current_regime = MarketRegime.UNKNOWN
         self._regime_adjustments: Dict[str, float] = {}
@@ -428,6 +437,9 @@ class ScalpingTrader:
         else:
             current_price = market_data.prices[-1]  # Fallback to candle close
 
+        # Get strategy for this pair (may have per-pair optimized params)
+        strategy = self._get_strategy_for_pair(pair)
+
         # Check if we have a position
         if pair in self.positions:
             position_data = self.positions[pair]
@@ -460,19 +472,13 @@ class ScalpingTrader:
 
             tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
 
-            if tp_progress >= 0.6:
+            if tp_progress >= 0.5:
                 if pos_side == "long":
                     trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
                     trailing_stop = max(trailing_stop, trail_price)
                 else:
                     trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
                     trailing_stop = trail_price if trailing_stop == 0 else min(trailing_stop, trail_price)
-            elif tp_progress >= 0.4 and not breakeven_triggered:
-                if pos_side == "long":
-                    trailing_stop = entry_price * (1 + fee_cost / 100 + 0.0005)
-                else:
-                    trailing_stop = entry_price * (1 - fee_cost / 100 - 0.0005)
-                breakeven_triggered = True
 
             # Update position tracking
             position_data['best_price'] = best_price

@@ -315,8 +315,8 @@ class RegimeDetector:
             else:
                 bear_score += 0.1
 
-        # Determine regime (lowered threshold from 0.5 to 0.4 for better detection)
-        if bull_score >= 0.4:
+        # Determine regime (threshold 0.4, pick stronger signal on tie)
+        if bull_score >= 0.4 and bull_score >= bear_score:
             return MarketRegime.BULL, min(bull_score, 1.0)
         elif bear_score >= 0.4:
             return MarketRegime.BEAR, min(bear_score, 1.0)

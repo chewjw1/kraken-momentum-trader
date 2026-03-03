@@ -248,23 +248,16 @@ class ScalpingBacktestRunner:
                         best_price = current.low
                     unrealized_pct = ((entry_price - best_price) / entry_price) * 100
 
-                dynamic_tp = strategy.config.take_profit_percent
+                dynamic_tp = config.take_profit_percent
                 tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
 
-                if tp_progress >= 0.6:
+                if tp_progress >= 0.5:
                     if position_side == "long":
                         trail = entry_price * (1 + unrealized_pct * 0.5 / 100)
                         trailing_stop_price = max(trailing_stop_price, trail)
                     else:
                         trail = entry_price * (1 - unrealized_pct * 0.5 / 100)
                         trailing_stop_price = trail if trailing_stop_price == 0 else min(trailing_stop_price, trail)
-                elif tp_progress >= 0.4 and not breakeven_triggered:
-                    fee_cost = self.fee_percent * 2
-                    if position_side == "long":
-                        trailing_stop_price = entry_price * (1 + fee_cost / 100 + 0.0005)
-                    else:
-                        trailing_stop_price = entry_price * (1 - fee_cost / 100 - 0.0005)
-                    breakeven_triggered = True
 
                 # Check trailing stop hit
                 trailing_hit = False
@@ -958,9 +951,13 @@ class RegimeAwareOptimizer:
         window_start = min_pts
 
         for i in range(min_pts + 1, len(candles)):
-            if regime_labels[i] != current_regime or i == len(candles) - 1:
-                # End of segment
-                window = candles[window_start:i]
+            is_last = (i == len(candles) - 1)
+            regime_changed = (regime_labels[i] != current_regime)
+
+            if regime_changed or is_last:
+                # Include last candle in final segment
+                end_idx = i + 1 if is_last and not regime_changed else i
+                window = candles[window_start:end_idx]
                 if len(window) >= 50 and current_regime in segments:  # Min 50 candles
                     segments[current_regime].append(window)
                 current_regime = regime_labels[i]
