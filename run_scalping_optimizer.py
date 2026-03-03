@@ -240,7 +240,8 @@ class ScalpingBacktestRunner:
             )
 
             if in_position:
-                # Trailing stop logic (only when enabled)                trailing_hit = False
+                # Trailing stop logic (only when enabled)
+                trailing_hit = False
                 if self.trailing_stops_enabled:
                     if position_side == "long":
                         if current.high > best_price:

@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -142,6 +143,10 @@ class ScalpingTrader:
         self._current_regime = MarketRegime.UNKNOWN
         self._regime_adjustments: Dict[str, float] = {}
 
+        # Trailing stops (disabled by default — params optimized without them)
+        ts_cfg = self.config.get('trailing_stops', {})
+        self.trailing_stops_enabled = ts_cfg.get('enabled', False)
+
         # Store base configs for regime adjustment
         self._base_default_config = default_config
         self._base_pair_params = dict(pair_params)
@@ -271,8 +276,10 @@ class ScalpingTrader:
             'last_update': datetime.now(timezone.utc).isoformat()
         }
         state_file = self.data_dir / "state.json"
-        with open(state_file, 'w') as f:
+        tmp_file = self.data_dir / "state.json.tmp"
+        with open(tmp_file, 'w') as f:
             json.dump(state, f, indent=2, default=str)
+        os.replace(tmp_file, state_file)
 
     def _get_market_data(self, pair: str) -> Optional[MarketData]:
         """Fetch market data for a pair."""
@@ -398,13 +405,14 @@ class ScalpingTrader:
                 ema_filter_enabled=ema_enabled,
                 # New indicator params from per-pair config or base
                 stoch_k_period=params.get('stoch_k_period', base.stoch_k_period),
+                stoch_d_period=params.get('stoch_d_period', base.stoch_d_period),
                 stoch_oversold=params.get('stoch_oversold', base.stoch_oversold),
                 stoch_overbought=params.get('stoch_overbought', base.stoch_overbought),
                 atr_period=params.get('atr_period', base.atr_period),
                 atr_stop_multiplier=params.get('atr_stop_multiplier', base.atr_stop_multiplier),
                 atr_tp_multiplier=params.get('atr_tp_multiplier', base.atr_tp_multiplier),
                 use_atr_stops=params.get('use_atr_stops', base.use_atr_stops),
-                shorting_enabled=base.shorting_enabled,
+                shorting_enabled=params.get('shorting_enabled', base.shorting_enabled),
                 short_min_confirmations=params.get('short_min_confirmations', base.short_min_confirmations),
             )
             self.pair_strategies[pair] = ScalpingStrategy(pair_config)
@@ -455,10 +463,10 @@ class ScalpingTrader:
             strategy_instance = self._get_strategy_for_pair(pair)
             trailing_stop_hit = False
             trailing_stop = position_data.get('trailing_stop', 0.0)
+            best_price = position_data.get('best_price', entry_price)
+            dynamic_tp = strategy_instance.config.take_profit_percent
 
             if self.trailing_stops_enabled:
-                best_price = position_data.get('best_price', entry_price)
-                dynamic_tp = strategy_instance.config.take_profit_percent
 
                 if pos_side == "long":
                     if current_price > best_price:

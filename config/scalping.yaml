@@ -77,6 +77,13 @@ indicators:
     tp_multiplier: 2.75
     use_dynamic_stops: true
 
+# Trailing stops — disabled because current params were optimized without them.
+# Enable for backtesting/optimization experiments only.
+trailing_stops:
+  enabled: false          # Set true to activate trailing stop logic
+  trail_trigger_pct: 0.5  # Start trailing at 50% of TP progress
+  trail_lock_pct: 0.5     # Lock in 50% of peak unrealized profit
+
 # Short selling configuration
 shorting:
   enabled: true
@@ -286,7 +293,7 @@ pair_parameters:
     stoch_overbought: 85
     atr_period: 18
     atr_stop_multiplier: 2.0
-    atr_tp_multiplier: 2.0
+    atr_tp_multiplier: 2.5
     short_min_confirmations: 2
 
   AVAX/USD:
