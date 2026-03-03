@@ -1,30 +1,27 @@
-# Scalping Strategy Configuration (v8 — Trailing Stops + Doji Filter)
+# Scalping Strategy Configuration (v8 — Bug-fixed, Doji Filter)
 # Enhanced with: Stochastic, MACD, OBV, ATR dynamic stops, short selling,
-#   trailing stops (breakeven at 40% TP, trail at 60% TP), doji candle filter
+#   trailing stops (trail at 50% of peak above 50% TP), doji candle filter
 # Validated with 1-minute execution simulation on 730 days of Kraken OHLCVT data
 #
-# Optimization approach:
-#   1. Per-pair optimized on 730 days of Kraken CSV data
-#   2. Validated with 1-minute execution: signals checked on 1m candles for
-#      realistic stop/TP/trailing triggers, slippage, and flash wick impact
-#   3. Pairs assigned to best interval (4h or 12h) based on realistic returns
-#   4. Trailing stops: breakeven at 40% of TP, trail at 50% of peak above 60% TP
-#   5. Doji filter: reject entries when candle body < 15% of range
+# NOTE: Params were optimized WITHOUT trailing stops. The trailing stop logic
+# exists in the backtester/live trader but cuts some winners short with these
+# params. Re-optimization with trailing stops baked in is recommended.
 #
 # 1-Minute Execution Validated Results (REALISTIC — with trailing + doji):
-#   BTC/USD:  +226.45% (4h,   88 trades, 67.0% WR, PF 4.60, DD 3.0%)
-#   SOL/USD:  +215.41% (12h, 150 trades, 69.3% WR, PF 1.70, DD 7.3%)
-#   ETH/USD:  +170.39% (4h,  144 trades, 59.0% WR, PF 1.67, DD 8.9%)
-#   AVAX/USD: +169.96% (12h, 108 trades, 63.0% WR, PF 1.55, DD 8.8%)
-#   NEAR/USD: +156.45% (4h,  149 trades, 60.4% WR, PF 1.40, DD 7.1%)
-#   XRP/USD:  +123.26% (4h,   80 trades, 66.2% WR, PF 1.90, DD 9.2%)
-#   ATOM/USD: +122.98% (12h,  98 trades, 68.4% WR, PF 1.54, DD 7.5%)
-#   DOT/USD:   +90.92% (4h,   67 trades, 64.2% WR, PF 1.71, DD 9.3%)
-#   POL/USD:   +82.54% (12h, 131 trades, 60.3% WR, PF 1.23, DD 11.7%)
-#   LINK/USD:  +81.58% (4h,  198 trades, 59.1% WR, PF 1.15, DD 14.6%)
+#   AVAX/USD: +184.23% (12h, 101 trades, 58.4% WR, PF 1.56, DD 15.1%)
+#   ATOM/USD:  +86.76% (12h,  91 trades, 65.9% WR, PF 1.39, DD 13.6%)
+#   NEAR/USD:  +74.69% (4h,  139 trades, 54.7% WR, PF 1.18, DD 15.0%)
+#   DOT/USD:   +33.70% (4h,   66 trades, 62.1% WR, PF 1.25, DD 10.7%)
+#   ETH/USD:    +9.53% (4h,  132 trades, 55.3% WR, PF 1.04, DD 8.8%)
+#   SOL/USD:    +4.93% (12h, 118 trades, 61.0% WR, PF 1.02, DD 16.2%)
+#   LINK/USD:   -3.77% (4h,  175 trades, 57.1% WR, PF 0.99, DD 16.8%)
+#   BTC/USD:    -6.04% (4h,   85 trades, 58.8% WR, PF 0.92, DD 7.0%)
+#   XRP/USD:   -11.25% (4h,   80 trades, 62.5% WR, PF 0.93, DD 9.5%)
+#   POL/USD:   -22.31% (12h, 123 trades, 56.9% WR, PF 0.94, DD 9.8%)
 #
-# All 10 pairs profitable. 6 at 4h interval, 4 at 12h interval.
-# Total portfolio: +1440% over 2 years | Avg: +144%/pair | 63.1% WR
+# 6/10 pairs profitable with trailing stops. Total: +350% over 2 years.
+# Without trailing stops (params' native context): +587%, 9/10 profitable.
+# Walk-forward validation: 30/30 OOS windows positive (no trailing).
 
 strategy:
   name: "scalping"
@@ -81,16 +78,16 @@ shorting:
 # Trading pairs — ordered by realistic validated performance
 # Each pair uses its best-performing interval (4h or 12h)
 pairs:
-  - BTC/USD    # 4h  — +226%, PF 4.60, DD 3.0%, Sharpe 0.76
-  - SOL/USD    # 12h — +215%, PF 1.70, DD 7.3%, Sharpe 0.26
-  - ETH/USD    # 4h  — +170%, PF 1.67, DD 8.9%, Sharpe 0.25
-  - AVAX/USD   # 12h — +170%, PF 1.55, DD 8.8%, Sharpe 0.20
-  - NEAR/USD   # 4h  — +156%, PF 1.40, DD 7.1%, Sharpe 0.16
-  - XRP/USD    # 4h  — +123%, PF 1.90, DD 9.2%, Sharpe 0.31
-  - ATOM/USD   # 12h — +123%, PF 1.54, DD 7.5%, Sharpe 0.20
-  - DOT/USD    # 4h  —  +91%, PF 1.71, DD 9.3%, Sharpe 0.26
-  - POL/USD    # 12h —  +83%, PF 1.23, DD 11.7%, Sharpe 0.10
-  - LINK/USD   # 4h  —  +82%, PF 1.15, DD 14.6%, Sharpe 0.07
+  - AVAX/USD   # 12h — +184%, PF 1.56, DD 15.1%
+  - ATOM/USD   # 12h —  +87%, PF 1.39, DD 13.6%
+  - NEAR/USD   # 4h  —  +75%, PF 1.18, DD 15.0%
+  - DOT/USD    # 4h  —  +34%, PF 1.25, DD 10.7%
+  - ETH/USD    # 4h  —  +10%, PF 1.04, DD 8.8%
+  - SOL/USD    # 12h —   +5%, PF 1.02, DD 16.2%
+  - LINK/USD   # 4h  —   -4%, PF 0.99, DD 16.8% (needs re-opt)
+  - BTC/USD    # 4h  —   -6%, PF 0.92, DD 7.0% (needs re-opt)
+  - XRP/USD    # 4h  —  -11%, PF 0.93, DD 9.5% (needs re-opt)
+  - POL/USD    # 12h —  -22%, PF 0.94, DD 9.8% (needs re-opt)
 
 # Per-pair parameters — HYBRID: 4h-optimized or 12h-optimized per pair
 # Pairs with candle_interval: 720 use 12h candles; others use default 240 (4h)
@@ -160,24 +157,24 @@ pair_parameters:
     short_min_confirmations: 4
 
   LINK/USD:
-    # Re-optimized with trailing stops: +81.58%, PF 1.15, DD 14.6%
-    take_profit_percent: 2.0
-    stop_loss_percent: 1.5
+    # Original 4h-optimized params (pre-trailing-stop)
+    take_profit_percent: 2.5
+    stop_loss_percent: 4.0
     rsi_period: 5
-    rsi_oversold: 30
-    rsi_overbought: 60
+    rsi_oversold: 25
+    rsi_overbought: 70
     bb_period: 15
     bb_std_dev: 1.75
-    vwap_threshold_percent: 0.6
-    volume_spike_threshold: 1.5
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 1.75
     min_confirmations: 3
-    stoch_k_period: 11
-    stoch_oversold: 15
-    stoch_overbought: 70
-    atr_period: 16
-    atr_stop_multiplier: 1.0
-    atr_tp_multiplier: 3.5
-    short_min_confirmations: 2
+    stoch_k_period: 7
+    stoch_oversold: 25
+    stoch_overbought: 80
+    atr_period: 18
+    atr_stop_multiplier: 3.0
+    atr_tp_multiplier: 4.0
+    short_min_confirmations: 4
 
   XRP/USD:
     # 1m-validated: +19.77%, PF 1.10, DD 13.7%, Sharpe 0.04

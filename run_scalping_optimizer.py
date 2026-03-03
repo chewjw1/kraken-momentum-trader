@@ -248,7 +248,7 @@ class ScalpingBacktestRunner:
                         best_price = current.low
                     unrealized_pct = ((entry_price - best_price) / entry_price) * 100
 
-                dynamic_tp = config.take_profit_percent
+                dynamic_tp = strategy.config.take_profit_percent
                 tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
 
                 if tp_progress >= 0.6:
@@ -261,9 +261,9 @@ class ScalpingBacktestRunner:
                 elif tp_progress >= 0.4 and not breakeven_triggered:
                     fee_cost = self.fee_percent * 2
                     if position_side == "long":
-                        trailing_stop_price = entry_price * (1 + fee_cost / 100 + 0.05)
+                        trailing_stop_price = entry_price * (1 + fee_cost / 100 + 0.0005)
                     else:
-                        trailing_stop_price = entry_price * (1 - fee_cost / 100 - 0.05)
+                        trailing_stop_price = entry_price * (1 - fee_cost / 100 - 0.0005)
                     breakeven_triggered = True
 
                 # Check trailing stop hit

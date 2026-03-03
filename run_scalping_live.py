@@ -428,9 +428,6 @@ class ScalpingTrader:
         else:
             current_price = market_data.prices[-1]  # Fallback to candle close
 
-        # Get strategy for this pair (may have per-pair optimized params)
-        strategy = self._get_strategy_for_pair(pair)
-
         # Check if we have a position
         if pair in self.positions:
             position_data = self.positions[pair]
@@ -472,9 +469,9 @@ class ScalpingTrader:
                     trailing_stop = trail_price if trailing_stop == 0 else min(trailing_stop, trail_price)
             elif tp_progress >= 0.4 and not breakeven_triggered:
                 if pos_side == "long":
-                    trailing_stop = entry_price * (1 + fee_cost / 100 + 0.05)
+                    trailing_stop = entry_price * (1 + fee_cost / 100 + 0.0005)
                 else:
-                    trailing_stop = entry_price * (1 - fee_cost / 100 - 0.05)
+                    trailing_stop = entry_price * (1 - fee_cost / 100 - 0.0005)
                 breakeven_triggered = True
 
             # Update position tracking

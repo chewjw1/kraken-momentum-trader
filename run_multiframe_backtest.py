@@ -189,14 +189,10 @@ def run_mtf_backtest(
                     unrealized_pct = ((best_price - entry_price) / entry_price) * 100
                     tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
 
-                    if tp_progress >= 0.6:
+                    if tp_progress >= 0.5:
                         # Trail at 50% of best unrealized profit
                         trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
                         trailing_stop_price = max(trailing_stop_price, trail_price)
-                    elif tp_progress >= 0.4 and not breakeven_triggered:
-                        # Move stop to breakeven (entry + fees)
-                        trailing_stop_price = entry_price * (1 + fee_pct * 100 * 2 / 100 + 0.05)
-                        breakeven_triggered = True
 
                     # Effective stop: max of original SL and trailing stop
                     original_sl = entry_price * (1 - dynamic_sl / 100)
@@ -240,13 +236,10 @@ def run_mtf_backtest(
                     unrealized_pct = ((entry_price - best_price) / entry_price) * 100
                     tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
 
-                    if tp_progress >= 0.6:
+                    if tp_progress >= 0.5:
                         trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
                         if trailing_stop_price == 0.0 or trail_price < trailing_stop_price:
                             trailing_stop_price = trail_price
-                    elif tp_progress >= 0.4 and not breakeven_triggered:
-                        trailing_stop_price = entry_price * (1 - fee_pct * 100 * 2 / 100 - 0.05)
-                        breakeven_triggered = True
 
                     original_sl = entry_price * (1 + dynamic_sl / 100)
                     effective_sl = min(original_sl, trailing_stop_price) if trailing_stop_price > 0 else original_sl
