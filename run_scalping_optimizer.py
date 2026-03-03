@@ -175,6 +175,11 @@ class ScalpingBacktestRunner:
         position_size_usd = 0.0
         position_side = "long"
 
+        # Trailing stop state
+        best_price = 0.0
+        trailing_stop_price = 0.0
+        breakeven_triggered = False
+
         lookback = max(config.bb_period, config.rsi_period, config.macd_slow + config.macd_signal, config.atr_period) + 5
 
         for i in range(lookback, len(candles)):
@@ -233,6 +238,42 @@ class ScalpingBacktestRunner:
             )
 
             if in_position:
+                # Trailing stop logic
+                if position_side == "long":
+                    if current.high > best_price:
+                        best_price = current.high
+                    unrealized_pct = ((best_price - entry_price) / entry_price) * 100
+                else:
+                    if best_price == 0.0 or current.low < best_price:
+                        best_price = current.low
+                    unrealized_pct = ((entry_price - best_price) / entry_price) * 100
+
+                dynamic_tp = config.take_profit_percent
+                tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+                if tp_progress >= 0.6:
+                    if position_side == "long":
+                        trail = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                        trailing_stop_price = max(trailing_stop_price, trail)
+                    else:
+                        trail = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                        trailing_stop_price = trail if trailing_stop_price == 0 else min(trailing_stop_price, trail)
+                elif tp_progress >= 0.4 and not breakeven_triggered:
+                    fee_cost = self.fee_percent * 2
+                    if position_side == "long":
+                        trailing_stop_price = entry_price * (1 + fee_cost / 100 + 0.05)
+                    else:
+                        trailing_stop_price = entry_price * (1 - fee_cost / 100 - 0.05)
+                    breakeven_triggered = True
+
+                # Check trailing stop hit
+                trailing_hit = False
+                if trailing_stop_price > 0:
+                    if position_side == "long" and current.low <= trailing_stop_price:
+                        trailing_hit = True
+                    elif position_side == "short" and current.high >= trailing_stop_price:
+                        trailing_hit = True
+
                 position = Position(
                     pair=pair,
                     side=position_side,
@@ -242,16 +283,21 @@ class ScalpingBacktestRunner:
                     entry_time=entry_time
                 )
 
-                signal = strategy.analyze(market_data, position)
+                should_exit = trailing_hit
+                if not should_exit:
+                    signal = strategy.analyze(market_data, position)
+                    if position_side == "long":
+                        should_exit = signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG)
+                    elif position_side == "short":
+                        should_exit = signal.signal_type == SignalType.CLOSE_SHORT
 
-                should_exit = False
-                if position_side == "long":
-                    should_exit = signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG)
-                elif position_side == "short":
-                    should_exit = signal.signal_type == SignalType.CLOSE_SHORT
+                if trailing_hit:
+                    # Use trailing stop price as exit price
+                    exit_price = trailing_stop_price
 
                 if should_exit:
-                    exit_price = current.close
+                    if not trailing_hit:
+                        exit_price = current.close
                     if position_side == "short":
                         gross_pnl_pct = ((entry_price - exit_price) / entry_price) * 100
                     else:
@@ -281,12 +327,18 @@ class ScalpingBacktestRunner:
                     position_size_usd = capital * (self.position_size_percent / 100)
                     position_side = "long"
                     in_position = True
+                    best_price = entry_price
+                    trailing_stop_price = 0.0
+                    breakeven_triggered = False
                 elif signal.signal_type == SignalType.SELL_SHORT:
                     entry_price = current.close
                     entry_time = current.timestamp
                     position_size_usd = capital * (self.position_size_percent / 100)
                     position_side = "short"
                     in_position = True
+                    best_price = entry_price
+                    trailing_stop_price = 0.0
+                    breakeven_triggered = False
 
         # Calculate metrics
         return self._calculate_metrics(trades, capital)

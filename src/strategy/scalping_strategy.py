@@ -415,6 +415,17 @@ class ScalpingStrategy(BaseStrategy):
 
         # Check if we have enough confirmations
         if confirmations >= self.config.min_confirmations:
+            # Price action filter: reject entries on doji/indecision candles
+            latest = market_data.ohlc[-1]
+            body = abs(latest.close - latest.open)
+            total_range = latest.high - latest.low
+            if total_range > 0 and body / total_range < 0.15:
+                return self._no_signal(
+                    market_data.pair,
+                    f"Doji candle filter: body/range={body/total_range:.2f}",
+                    timestamp
+                )
+
             # Get dynamic stops
             stop_pct, tp_pct = self._get_dynamic_stops(signals)
 
@@ -519,6 +530,17 @@ class ScalpingStrategy(BaseStrategy):
 
         # Shorts require more confirmations (higher bar)
         if confirmations >= self.config.short_min_confirmations:
+            # Price action filter: reject entries on doji/indecision candles
+            latest = market_data.ohlc[-1]
+            body = abs(latest.close - latest.open)
+            total_range = latest.high - latest.low
+            if total_range > 0 and body / total_range < 0.15:
+                return self._no_signal(
+                    market_data.pair,
+                    f"Doji candle filter (short): body/range={body/total_range:.2f}",
+                    timestamp
+                )
+
             stop_pct, tp_pct = self._get_dynamic_stops(signals)
 
             total_fees = self.config.fee_percent * 2

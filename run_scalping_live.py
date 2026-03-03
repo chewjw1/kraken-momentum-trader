@@ -435,33 +435,106 @@ class ScalpingTrader:
         if pair in self.positions:
             position_data = self.positions[pair]
             entry_price = position_data['entry_price']
-            pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            pos_side = position_data.get('side', 'long')
 
+            if pos_side == "long":
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            else:
+                pnl_pct = ((entry_price - current_price) / entry_price) * 100
+
+            # --- Trailing stop logic ---
+            best_price = position_data.get('best_price', entry_price)
+            trailing_stop = position_data.get('trailing_stop', 0.0)
+            breakeven_triggered = position_data.get('breakeven_triggered', False)
+
+            # Get dynamic TP for progress calculation
+            strategy_instance = self._get_strategy_for_pair(pair)
+            dynamic_tp = strategy_instance.config.take_profit_percent
+            fee_cost = strategy_instance.config.fee_percent * 2
+
+            if pos_side == "long":
+                if current_price > best_price:
+                    best_price = current_price
+                unrealized_pct = ((best_price - entry_price) / entry_price) * 100
+            else:
+                if best_price == 0.0 or current_price < best_price:
+                    best_price = current_price
+                unrealized_pct = ((entry_price - best_price) / entry_price) * 100
+
+            tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+            if tp_progress >= 0.6:
+                if pos_side == "long":
+                    trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                    trailing_stop = max(trailing_stop, trail_price)
+                else:
+                    trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                    trailing_stop = trail_price if trailing_stop == 0 else min(trailing_stop, trail_price)
+            elif tp_progress >= 0.4 and not breakeven_triggered:
+                if pos_side == "long":
+                    trailing_stop = entry_price * (1 + fee_cost / 100 + 0.05)
+                else:
+                    trailing_stop = entry_price * (1 - fee_cost / 100 - 0.05)
+                breakeven_triggered = True
+
+            # Update position tracking
+            position_data['best_price'] = best_price
+            position_data['trailing_stop'] = trailing_stop
+            position_data['breakeven_triggered'] = breakeven_triggered
+
+            # Check trailing stop hit
+            trailing_stop_hit = False
+            if trailing_stop > 0:
+                if pos_side == "long" and current_price <= trailing_stop:
+                    trailing_stop_hit = True
+                elif pos_side == "short" and current_price >= trailing_stop:
+                    trailing_stop_hit = True
+
+            trail_info = f"trail=${trailing_stop:.2f}" if trailing_stop > 0 else "no trail"
             self.logger.info(
                 f"Checking {pair}",
+                side=pos_side,
                 entry_price=f"${entry_price:.2f}",
                 current_price=f"${current_price:.2f}",
+                best_price=f"${best_price:.2f}",
                 pnl_pct=f"{pnl_pct:.2f}%",
-                tp_target=f"{strategy.config.take_profit_percent}%",
-                sl_target=f"-{strategy.config.stop_loss_percent}%"
+                tp_target=f"{dynamic_tp}%",
+                trailing=trail_info,
             )
 
             position = Position(
                 pair=pair,
-                side="long",
+                side=pos_side,
                 entry_price=entry_price,
                 current_price=current_price,
                 size=position_data['size'],
                 entry_time=datetime.fromisoformat(position_data['entry_time'])
             )
 
-            signal = strategy.analyze(market_data, position)
-            self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
+            # Trailing stop takes priority over strategy signals
+            if trailing_stop_hit:
+                exit_reason = f"Trailing stop hit at ${trailing_stop:.2f}"
+                self.logger.info(f"TRAILING STOP triggered for {pair}", trail_price=f"${trailing_stop:.2f}")
+            else:
+                signal = strategy_instance.analyze(market_data, position)
+                self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
 
-            if signal.signal_type.value in ("sell", "close_long"):
+            should_exit = trailing_stop_hit
+            if not should_exit:
+                if pos_side == "long":
+                    should_exit = signal.signal_type.value in ("sell", "close_long")
+                else:
+                    should_exit = signal.signal_type.value == "close_short"
+                if should_exit:
+                    exit_reason = signal.reason
+
+            if should_exit:
                 # Exit position
-                pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-                fee_pct = strategy.config.fee_percent * 2
+                if pos_side == "long":
+                    pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+                else:
+                    pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
+                fee_pct = strategy_instance.config.fee_percent * 2
                 net_pnl_pct = pnl_pct - fee_pct
                 pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
 
@@ -489,7 +562,8 @@ class ScalpingTrader:
 
                 self.logger.info(
                     f"CLOSED {pair}",
-                    reason=signal.reason,
+                    side=pos_side,
+                    reason=exit_reason,
                     pnl_pct=f"{net_pnl_pct:.2f}%",
                     pnl_usd=f"${pnl_usd:.2f}",
                     capital=f"${self.capital:.2f}",
@@ -523,9 +597,11 @@ class ScalpingTrader:
                 return
 
             # Look for entry
+            strategy = self._get_strategy_for_pair(pair)
             signal = strategy.analyze(market_data, None)
 
-            if signal.signal_type.value == "buy":
+            if signal.signal_type.value in ("buy", "sell_short"):
+                pos_side = "long" if signal.signal_type.value == "buy" else "short"
                 deployed_capital = sum(p['size_usd'] for p in self.positions.values())
                 available_capital = self.capital - deployed_capital
 
@@ -550,15 +626,20 @@ class ScalpingTrader:
 
                 self.positions[pair] = {
                     'entry_price': current_price,
+                    'side': pos_side,
                     'size': size,
                     'size_usd': size_usd,
                     'entry_time': datetime.now(timezone.utc).isoformat(),
                     'reason': signal.reason,
                     'regime': self._current_regime.value,
+                    'best_price': current_price,
+                    'trailing_stop': 0.0,
+                    'breakeven_triggered': False,
                 }
 
                 self.logger.info(
                     f"OPENED {pair}",
+                    side=pos_side,
                     reason=signal.reason,
                     price=f"${current_price:.2f}",
                     size_usd=f"${size_usd:.2f}",
