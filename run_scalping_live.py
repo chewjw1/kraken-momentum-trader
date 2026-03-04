@@ -26,7 +26,7 @@ load_dotenv()
 
 import yaml
 
-from src.exchange.kraken_client import KrakenClient, OrderSide, OrderType
+from src.exchange.kraken_client import KrakenClient, OHLC, OrderSide, OrderType
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.base_strategy import MarketData, Position
 from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime
@@ -281,11 +281,47 @@ class ScalpingTrader:
             json.dump(state, f, indent=2, default=str)
         os.replace(tmp_file, state_file)
 
+    # Valid Kraken API OHLC intervals (minutes)
+    VALID_API_INTERVALS = {1, 5, 15, 30, 60, 240, 1440, 10080, 21600}
+
+    @staticmethod
+    def _aggregate_candles(candles: list[OHLC], factor: int) -> list[OHLC]:
+        """Aggregate smaller candles into larger ones by grouping `factor` candles."""
+        aggregated = []
+        for i in range(0, len(candles) - factor + 1, factor):
+            group = candles[i:i + factor]
+            aggregated.append(OHLC(
+                timestamp=group[0].timestamp,
+                open=group[0].open,
+                high=max(c.high for c in group),
+                low=min(c.low for c in group),
+                close=group[-1].close,
+                vwap=sum(c.vwap * c.volume for c in group) / max(sum(c.volume for c in group), 1e-10),
+                volume=sum(c.volume for c in group),
+                count=sum(c.count for c in group),
+            ))
+        return aggregated
+
+    def _fetch_ohlc(self, pair: str, interval: int) -> list[OHLC]:
+        """Fetch OHLC data, aggregating from a smaller interval if needed."""
+        if interval in self.VALID_API_INTERVALS:
+            return self.client.get_ohlc(pair, interval=interval)
+
+        # Find the largest valid interval that evenly divides the target
+        for base in sorted(self.VALID_API_INTERVALS, reverse=True):
+            if base < interval and interval % base == 0:
+                factor = interval // base
+                raw = self.client.get_ohlc(pair, interval=base)
+                return self._aggregate_candles(raw, factor)
+
+        # Fallback: use as-is (will likely error, same as before)
+        return self.client.get_ohlc(pair, interval=interval)
+
     def _get_market_data(self, pair: str) -> Optional[MarketData]:
         """Fetch market data for a pair."""
         try:
             interval = self.pair_intervals.get(pair, self.candle_interval)
-            ohlc = self.client.get_ohlc(pair, interval=interval)
+            ohlc = self._fetch_ohlc(pair, interval)
             if not ohlc or len(ohlc) < 25:
                 return None
 
