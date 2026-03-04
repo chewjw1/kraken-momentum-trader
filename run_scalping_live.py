@@ -999,12 +999,15 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
-    # Start dashboard in background thread
+    # Start dashboard in background thread using waitress (thread-pooled WSGI server)
     from src.scalping_dashboard.app import create_app
+    from waitress import serve as waitress_serve
     dashboard_app = create_app(args.data_dir)
     dashboard_thread = threading.Thread(
-        target=dashboard_app.run,
-        kwargs={'host': '127.0.0.1', 'port': args.dashboard_port, 'debug': False, 'threaded': False},
+        target=waitress_serve,
+        args=(dashboard_app,),
+        kwargs={'host': '0.0.0.0', 'port': args.dashboard_port, 'threads': 4,
+                'channel_timeout': 30, 'connection_limit': 100},
         daemon=True,
     )
     dashboard_thread.start()
