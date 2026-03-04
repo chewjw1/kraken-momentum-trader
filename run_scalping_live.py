@@ -175,6 +175,9 @@ class ScalpingTrader:
             'start_time': datetime.now(timezone.utc).isoformat()
         }
 
+        # Per-pair indicator snapshots (updated each cycle, saved to state for dashboard)
+        self.indicator_snapshots: Dict[str, dict] = {}
+
         # Initialize logger BEFORE loading state
         self.logger = get_logger(__name__)
 
@@ -259,6 +262,7 @@ class ScalpingTrader:
                         self._current_regime = MarketRegime(state['current_regime'])
                     except ValueError:
                         pass
+                self.indicator_snapshots = state.get('indicator_snapshots', {})
                 self.logger.info("Loaded saved state")
             except Exception as e:
                 self.logger.error(f"Error loading state: {e}")
@@ -273,6 +277,7 @@ class ScalpingTrader:
             'circuit_breaker': self.circuit_breaker.to_dict(),
             'regime_detector': self.regime_detector.to_dict(),
             'current_regime': self._current_regime.value,
+            'indicator_snapshots': self.indicator_snapshots,
             'last_update': datetime.now(timezone.utc).isoformat()
         }
         state_file = self.data_dir / "state.json"
@@ -554,6 +559,56 @@ class ScalpingTrader:
         """Get the strategy for a specific pair (per-pair or default)."""
         return self.pair_strategies.get(pair, self.strategy)
 
+    def _compute_indicator_snapshot(self, pair: str, strategy: 'ScalpingStrategy', market_data: MarketData, current_price: float) -> None:
+        """Compute and cache indicator values for the dashboard."""
+        try:
+            signals = strategy._calculate_signals(market_data)
+            stop_pct, tp_pct = strategy._get_dynamic_stops(signals)
+
+            rsi = signals.get("rsi")
+            stoch = signals.get("stochastic")
+            macd = signals.get("macd")
+            bb = signals.get("bollinger")
+            vwap = signals.get("vwap")
+            atr = signals.get("atr")
+            ema = signals.get("ema")
+            obv = signals.get("obv")
+            volume = signals.get("volume")
+
+            snapshot = {
+                "price": current_price,
+                "rsi": round(rsi.value, 1) if rsi else None,
+                "rsi_oversold": strategy.config.rsi_oversold,
+                "rsi_overbought": strategy.config.rsi_overbought,
+                "stoch_k": round(stoch.k_value, 1) if stoch else None,
+                "stoch_d": round(stoch.d_value, 1) if stoch and hasattr(stoch, 'd_value') else None,
+                "stoch_oversold": strategy.config.stoch_oversold,
+                "stoch_overbought": strategy.config.stoch_overbought,
+                "macd_histogram": round(macd.histogram, 4) if macd else None,
+                "macd_signal_line": round(macd.signal_line, 4) if macd and hasattr(macd, 'signal_line') else None,
+                "bb_upper": round(bb.upper_band, 4) if bb else None,
+                "bb_lower": round(bb.lower_band, 4) if bb else None,
+                "bb_middle": round(bb.middle_band, 4) if bb else None,
+                "bb_percent_b": round(bb.percent_b, 3) if bb else None,
+                "vwap": round(vwap.value, 4) if vwap else None,
+                "vwap_pct": round(vwap.price_vs_vwap, 2) if vwap else None,
+                "atr_pct": round(atr.atr_percent, 2) if atr else None,
+                "ema_trend": round(ema.trend_strength, 2) if ema else None,
+                "obv_divergence": obv.divergence if obv else None,
+                "volume_ratio": round(volume.volume_ratio, 1) if volume else None,
+                "dynamic_tp_pct": round(tp_pct, 2),
+                "dynamic_sl_pct": round(stop_pct, 2),
+                "tp_price_long": round(current_price * (1 + tp_pct / 100), 4),
+                "sl_price_long": round(current_price * (1 - stop_pct / 100), 4),
+                "tp_price_short": round(current_price * (1 - tp_pct / 100), 4),
+                "sl_price_short": round(current_price * (1 + stop_pct / 100), 4),
+                "min_confirmations": strategy.config.min_confirmations,
+                "updated": datetime.now(timezone.utc).isoformat(),
+            }
+            self.indicator_snapshots[pair] = snapshot
+        except Exception as e:
+            self.logger.debug(f"Could not compute indicators for {pair}: {e}")
+
     def _process_pair(self, pair: str) -> None:
         """Process a single trading pair."""
         # Check if pair is enabled by adaptive manager
@@ -572,6 +627,9 @@ class ScalpingTrader:
 
         # Get strategy for this pair (may have per-pair optimized params)
         strategy = self._get_strategy_for_pair(pair)
+
+        # Compute indicator snapshot for dashboard
+        self._compute_indicator_snapshot(pair, strategy, market_data, current_price)
 
         # Check if we have a position
         if pair in self.positions:
@@ -701,7 +759,11 @@ class ScalpingTrader:
                     entry_time=position.entry_time,
                     exit_time=datetime.now(timezone.utc),
                     pnl=pnl_usd,
-                    pnl_percent=net_pnl_pct
+                    pnl_percent=net_pnl_pct,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    size_usd=position_data['size_usd'],
+                    side=pos_side,
                 )
 
                 # Update metrics

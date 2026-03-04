@@ -29,6 +29,10 @@ class TradeRecord:
     pnl: float
     pnl_percent: float
     is_win: bool
+    entry_price: float = 0.0
+    exit_price: float = 0.0
+    size_usd: float = 0.0
+    side: str = "long"
 
 
 @dataclass
@@ -162,7 +166,11 @@ class AdaptivePairManager:
         entry_time: datetime,
         exit_time: datetime,
         pnl: float,
-        pnl_percent: float
+        pnl_percent: float,
+        entry_price: float = 0.0,
+        exit_price: float = 0.0,
+        size_usd: float = 0.0,
+        side: str = "long",
     ) -> None:
         """
         Record a completed trade for performance tracking.
@@ -173,6 +181,10 @@ class AdaptivePairManager:
             exit_time: Trade exit time.
             pnl: Profit/loss in USD.
             pnl_percent: Profit/loss percentage.
+            entry_price: Entry fill price.
+            exit_price: Exit fill price.
+            size_usd: Position size in USD.
+            side: Trade side (long/short).
         """
         if pair not in self._pairs:
             self.register_pair(pair)
@@ -186,7 +198,11 @@ class AdaptivePairManager:
             exit_time=exit_time,
             pnl=pnl,
             pnl_percent=pnl_percent,
-            is_win=is_win
+            is_win=is_win,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            size_usd=size_usd,
+            side=side,
         )
 
         perf.trades.append(trade)
@@ -458,6 +474,21 @@ class AdaptivePairManager:
                     "consecutive_losses": perf.consecutive_losses,
                     "disabled_reason": perf.disabled_reason,
                     "cooldown_until": perf.cooldown_until.isoformat() if perf.cooldown_until else None,
+                    "trades": [
+                        {
+                            "pair": t.pair,
+                            "entry_time": t.entry_time.isoformat() if isinstance(t.entry_time, datetime) else str(t.entry_time),
+                            "exit_time": t.exit_time.isoformat() if isinstance(t.exit_time, datetime) else str(t.exit_time),
+                            "pnl": t.pnl,
+                            "pnl_percent": t.pnl_percent,
+                            "is_win": t.is_win,
+                            "entry_price": t.entry_price,
+                            "exit_price": t.exit_price,
+                            "size_usd": t.size_usd,
+                            "side": t.side,
+                        }
+                        for t in perf.trades
+                    ],
                 }
                 for pair, perf in self._pairs.items()
             }
@@ -483,3 +514,25 @@ class AdaptivePairManager:
             cooldown_str = pair_data.get("cooldown_until")
             if cooldown_str:
                 perf.cooldown_until = datetime.fromisoformat(cooldown_str)
+
+            # Restore trade history
+            for t in pair_data.get("trades", []):
+                entry_t = t.get("entry_time", "")
+                exit_t = t.get("exit_time", "")
+                try:
+                    entry_dt = datetime.fromisoformat(entry_t) if entry_t else datetime.now(timezone.utc)
+                    exit_dt = datetime.fromisoformat(exit_t) if exit_t else datetime.now(timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+                perf.trades.append(TradeRecord(
+                    pair=t.get("pair", pair),
+                    entry_time=entry_dt,
+                    exit_time=exit_dt,
+                    pnl=t.get("pnl", 0.0),
+                    pnl_percent=t.get("pnl_percent", 0.0),
+                    is_win=t.get("is_win", False),
+                    entry_price=t.get("entry_price", 0.0),
+                    exit_price=t.get("exit_price", 0.0),
+                    size_usd=t.get("size_usd", 0.0),
+                    side=t.get("side", "long"),
+                ))
