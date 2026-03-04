@@ -6,6 +6,18 @@
     <title>Scalping Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <meta http-equiv="refresh" content="60">
+    <style>
+        .expandable { cursor: pointer; transition: background-color 0.15s; }
+        .expandable:hover { background-color: rgba(255,255,255,0.05); }
+        .expand-content { display: none; }
+        .expand-content.open { display: block; }
+        .expand-arrow { transition: transform 0.2s; display: inline-block; }
+        .expand-arrow.open { transform: rotate(90deg); }
+        .section-toggle { cursor: pointer; user-select: none; }
+        .section-toggle:hover { background-color: rgba(255,255,255,0.03); }
+        .section-body { transition: max-height 0.3s ease; overflow: hidden; }
+        .section-body.collapsed { max-height: 0 !important; padding: 0 !important; }
+    </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <div class="container mx-auto px-4 py-8 max-w-6xl">
@@ -64,13 +76,39 @@
                     <div class="space-y-2">
                         {% for pair in enabled_pairs %}
                         {% set p = pairs.get(pair, {}) %}
-                        <div class="flex items-center justify-between p-2 bg-gray-700 rounded">
-                            <span class="font-medium">{{ pair }}</span>
-                            <div class="flex items-center gap-4 text-sm">
-                                <span class="text-gray-400">{{ p.total_trades or 0 }} trades</span>
-                                <span class="{% if (p.total_pnl or 0) >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
-                                    ${{ "%.2f"|format(p.total_pnl or 0) }}
-                                </span>
+                        {% set wr = (p.wins / p.total_trades * 100) if p.total_trades > 0 else 0 %}
+                        <div class="bg-gray-700 rounded overflow-hidden">
+                            <div class="expandable flex items-center justify-between p-2" onclick="toggleExpand(this)">
+                                <div class="flex items-center gap-2">
+                                    <span class="expand-arrow text-gray-500 text-xs">&#9654;</span>
+                                    <span class="font-medium">{{ pair }}</span>
+                                </div>
+                                <div class="flex items-center gap-4 text-sm">
+                                    <span class="text-gray-400">{{ p.total_trades or 0 }} trades</span>
+                                    <span class="{% if (p.total_pnl or 0) >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                        ${{ "%.2f"|format(p.total_pnl or 0) }}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="expand-content px-4 pb-3">
+                                <div class="grid grid-cols-3 gap-3 text-sm pt-2 border-t border-gray-600">
+                                    <div>
+                                        <div class="text-gray-500 text-xs">Win Rate</div>
+                                        <div class="{% if wr >= 50 %}text-green-400{% elif wr >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                                            {{ "%.1f"|format(wr) }}%
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-500 text-xs">W / L</div>
+                                        <div>{{ p.wins or 0 }} / {{ p.losses or 0 }}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-gray-500 text-xs">Consec. Losses</div>
+                                        <div class="{% if (p.consecutive_losses or 0) >= 3 %}text-red-400{% endif %}">
+                                            {{ p.consecutive_losses or 0 }}
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         {% endfor %}
@@ -92,19 +130,45 @@
                     <div class="space-y-2">
                         {% for pair in disabled_pairs %}
                         {% set p = pairs.get(pair, {}) %}
-                        <div class="p-2 bg-gray-700 rounded">
-                            <div class="flex items-center justify-between">
-                                <span class="font-medium text-gray-400">{{ pair }}</span>
+                        {% set wr = (p.wins / p.total_trades * 100) if p.total_trades > 0 else 0 %}
+                        <div class="bg-gray-700 rounded overflow-hidden">
+                            <div class="expandable flex items-center justify-between p-2" onclick="toggleExpand(this)">
+                                <div class="flex items-center gap-2">
+                                    <span class="expand-arrow text-gray-500 text-xs">&#9654;</span>
+                                    <span class="font-medium text-gray-400">{{ pair }}</span>
+                                </div>
                                 <span class="text-red-400 text-sm">${{ "%.2f"|format(p.total_pnl or 0) }}</span>
                             </div>
-                            <div class="text-xs text-gray-500 mt-1">
-                                {{ p.disabled_reason or 'Unknown reason' }}
+                            <div class="expand-content px-4 pb-3">
+                                <div class="pt-2 border-t border-gray-600 text-sm space-y-2">
+                                    <div class="grid grid-cols-3 gap-3">
+                                        <div>
+                                            <div class="text-gray-500 text-xs">Win Rate</div>
+                                            <div class="{% if wr >= 50 %}text-green-400{% elif wr >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                                                {{ "%.1f"|format(wr) }}%
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-500 text-xs">W / L</div>
+                                            <div>{{ p.wins or 0 }} / {{ p.losses or 0 }}</div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-500 text-xs">Consec. Losses</div>
+                                            <div class="{% if (p.consecutive_losses or 0) >= 3 %}text-red-400{% endif %}">
+                                                {{ p.consecutive_losses or 0 }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs text-gray-500">
+                                        Reason: {{ p.disabled_reason or 'Unknown reason' }}
+                                    </div>
+                                    {% if p.cooldown_until %}
+                                    <div class="text-xs text-yellow-500">
+                                        Cooldown until: {{ p.cooldown_until[:19] }}
+                                    </div>
+                                    {% endif %}
+                                </div>
                             </div>
-                            {% if p.cooldown_until %}
-                            <div class="text-xs text-yellow-500 mt-1">
-                                Cooldown until: {{ p.cooldown_until[:19] }}
-                            </div>
-                            {% endif %}
                         </div>
                         {% endfor %}
                     </div>
@@ -115,12 +179,13 @@
             </div>
         </div>
 
-        <!-- Open Positions -->
+        <!-- Open Positions (collapsible) -->
         <div class="bg-gray-800 rounded-lg border border-gray-700 mb-8">
-            <div class="px-4 py-3 border-b border-gray-700">
+            <div class="section-toggle px-4 py-3 border-b border-gray-700 flex items-center justify-between" onclick="toggleSection(this)">
                 <h2 class="text-lg font-medium">Open Positions ({{ positions|length }})</h2>
+                <span class="expand-arrow open text-gray-500">&#9654;</span>
             </div>
-            <div class="p-4">
+            <div class="section-body p-4">
                 {% if positions %}
                 <div class="overflow-x-auto">
                     <table class="w-full">
@@ -152,12 +217,13 @@
             </div>
         </div>
 
-        <!-- Pair Performance Table -->
+        <!-- Pair Performance Table (collapsible) -->
         <div class="bg-gray-800 rounded-lg border border-gray-700">
-            <div class="px-4 py-3 border-b border-gray-700">
+            <div class="section-toggle px-4 py-3 border-b border-gray-700 flex items-center justify-between" onclick="toggleSection(this)">
                 <h2 class="text-lg font-medium">Pair Performance Details</h2>
+                <span class="expand-arrow open text-gray-500">&#9654;</span>
             </div>
-            <div class="overflow-x-auto">
+            <div class="section-body overflow-x-auto">
                 <table class="w-full">
                     <thead>
                         <tr class="text-gray-400 text-sm text-left">
@@ -205,5 +271,21 @@
             <p>Auto-refreshes every 60 seconds | Per-pair optimized TP/SL (see config/scalping.yaml)</p>
         </div>
     </div>
+
+    <script>
+        function toggleExpand(el) {
+            const content = el.nextElementSibling;
+            const arrow = el.querySelector('.expand-arrow');
+            content.classList.toggle('open');
+            arrow.classList.toggle('open');
+        }
+
+        function toggleSection(el) {
+            const body = el.nextElementSibling;
+            const arrow = el.querySelector('.expand-arrow');
+            body.classList.toggle('collapsed');
+            arrow.classList.toggle('open');
+        }
+    </script>
 </body>
 </html>
