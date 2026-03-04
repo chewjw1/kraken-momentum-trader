@@ -1004,7 +1004,7 @@ def main():
     dashboard_app = create_app(args.data_dir)
     dashboard_thread = threading.Thread(
         target=dashboard_app.run,
-        kwargs={'host': '0.0.0.0', 'port': args.dashboard_port, 'debug': False},
+        kwargs={'host': '127.0.0.1', 'port': args.dashboard_port, 'debug': False, 'threaded': False},
         daemon=True,
     )
     dashboard_thread.start()
