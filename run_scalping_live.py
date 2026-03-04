@@ -17,6 +17,7 @@ import signal
 import sys
 import time
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -997,6 +998,17 @@ def main():
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
+
+    # Start dashboard in background thread
+    from src.scalping_dashboard.app import create_app
+    dashboard_app = create_app(args.data_dir)
+    dashboard_thread = threading.Thread(
+        target=dashboard_app.run,
+        kwargs={'host': '0.0.0.0', 'port': args.dashboard_port, 'debug': False},
+        daemon=True,
+    )
+    dashboard_thread.start()
+    print(f"Dashboard running on port {args.dashboard_port}")
 
     # Print initial status
     status = trader.get_status()
