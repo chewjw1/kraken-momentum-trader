@@ -68,6 +68,8 @@ def load_state(data_dir: Path) -> dict:
         'circuit_breaker_state': 'closed',
         'uptime_seconds': 0,
         'start_time': datetime.now(timezone.utc).isoformat(),
+        'deployed_capital': 0.0,
+        'cash_capital': 10000.0,
     }
 
     if not state_file.exists():
@@ -157,6 +159,12 @@ def load_state(data_dir: Path) -> dict:
 
         # Open position pairs (for highlighting in trade list)
         state['open_pairs'] = list(state.get('positions', {}).keys())
+
+        # Deployed vs cash capital
+        positions = state.get('positions', {})
+        deployed = sum(p.get('size_usd', 0) for p in positions.values())
+        state['deployed_capital'] = deployed
+        state['cash_capital'] = state.get('capital', 0) - deployed
 
         return state
 

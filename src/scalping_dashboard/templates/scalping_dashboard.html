@@ -65,6 +65,10 @@
             <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
                 <div class="text-gray-400 text-sm">Capital</div>
                 <div class="text-2xl font-bold">${{ "%.2f"|format(capital) }}</div>
+                <div class="text-xs mt-1 text-gray-500">
+                    <span class="text-yellow-400">${{ "%.0f"|format(deployed_capital) }}</span> deployed
+                    · <span class="text-green-400">${{ "%.0f"|format(cash_capital) }}</span> cash
+                </div>
             </div>
             <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
                 <div class="text-gray-400 text-sm">Total P&L</div>
