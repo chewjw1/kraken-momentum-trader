@@ -450,6 +450,7 @@ def main():
     parser.add_argument("--pairs", nargs="+", default=None, help="Override pairs")
     parser.add_argument("--slippage", type=float, default=0.02, help="Slippage percent (default: 0.02)")
     parser.add_argument("--fee", type=float, default=0.16, help="Fee percent (default: 0.16 maker)")
+    parser.add_argument("--end-date", type=str, default=None, help="End date YYYY-MM-DD (default: 2026-03-02)")
     args = parser.parse_args()
 
     with open("config/scalping.yaml") as f:
@@ -459,7 +460,11 @@ def main():
     pair_params = config.get("pair_parameters", {})
     provider = KrakenCSVProvider()
 
-    end = datetime(2026, 3, 2, tzinfo=timezone.utc)
+    if args.end_date:
+        y, m, d = (int(x) for x in args.end_date.split('-'))
+        end = datetime(y, m, d, tzinfo=timezone.utc)
+    else:
+        end = datetime(2026, 3, 2, tzinfo=timezone.utc)
     start = end - timedelta(days=args.days)
 
     print("=" * 78)
@@ -532,8 +537,8 @@ def main():
         print(f"    {pair:>10}: {r['total_pnl_pct']:+7.2f}%  |  {r['trades']:>3} trades  "
               f"|  {r['win_rate']:.1f}% WR  |  PF {r['profit_factor']:.2f}  "
               f"|  DD {r['max_dd_pct']:.1f}%  |  Sharpe {r['sharpe']:.2f}  [{status}]")
-        print(f"               Exits: {r['tp_exits']} TP / {r['sl_exits']} SL / {r['trail_exits']} trail / {r['signal_exits']} signal  "
-              f"|  Avg hold: {r['avg_hold_min']:.0f}m  |  L:{r['long_trades']} S:{r['short_trades']}")
+        print(f"               Exits: {r.get('tp_exits',0)} TP / {r.get('sl_exits',0)} SL / {r.get('trail_exits',0)} trail / {r.get('signal_exits',0)} signal  "
+              f"|  Avg hold: {r.get('avg_hold_min',0):.0f}m  |  L:{r.get('long_trades',0)} S:{r.get('short_trades',0)}")
 
     print()
     print("=" * 78)
