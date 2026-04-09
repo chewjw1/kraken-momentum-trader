@@ -323,19 +323,25 @@ class Trader:
         pos = self.state_machine.get_position(pair)
 
         # === TAKE-PROFIT CHECK (per-pair) ===
-        if pos and pair_settings.take_profit_percent > 0:
-            pnl_percent = ((current_price - pos.entry_price) / pos.entry_price) * 100
+        if pos and pair_settings.take_profit_percent > 0 and pos.entry_price > 0:
+            is_short = pos.side == "short"
+            if is_short:
+                pnl_percent = ((pos.entry_price - current_price) / pos.entry_price) * 100
+            else:
+                pnl_percent = ((current_price - pos.entry_price) / pos.entry_price) * 100
             if pnl_percent >= pair_settings.take_profit_percent:
                 logger.info(
                     f"Take-profit triggered for {pair}: {pnl_percent:.2f}% >= {pair_settings.take_profit_percent}%"
                 )
                 # Create exit signal for take-profit
-                from ..strategy.base_strategy import TradingSignal
-                take_profit_signal = TradingSignal(
-                    signal_type=SignalType.CLOSE_LONG,
+                from ..strategy.base_strategy import Signal
+                signal_type = SignalType.CLOSE_SHORT if is_short else SignalType.CLOSE_LONG
+                take_profit_signal = Signal(
+                    signal_type=signal_type,
                     pair=pair,
-                    price=current_price,
                     strength=1.0,
+                    price=current_price,
+                    timestamp=datetime.now(timezone.utc),
                     reason=f"Take profit {pair_settings.take_profit_percent:.1f}%",
                     indicators={}
                 )
@@ -542,6 +548,10 @@ class Trader:
             return
 
         position_size_usd = size_check.adjusted_size
+        if price <= 0:
+            logger.warning(f"Invalid price {price} for {pair}, skipping entry")
+            self.state_machine.analysis_complete(has_signal=False)
+            return
         position_size_units = position_size_usd / price
 
         order_side = OrderSide.SELL if side == "short" else OrderSide.BUY
@@ -675,6 +685,9 @@ class Trader:
             return
 
         add_on_size_usd = add_check.adjusted_size
+        if current_price <= 0:
+            logger.warning(f"Invalid price {current_price} for {pair}, skipping martingale add-on")
+            return
         add_on_size_units = add_on_size_usd / current_price
 
         logger.info(
@@ -785,7 +798,10 @@ class Trader:
             exit_price = order.price or price
 
             # Calculate P&L (inverted for shorts)
-            if is_short:
+            if position.entry_price <= 0:
+                pnl = 0.0
+                pnl_percent = 0.0
+            elif is_short:
                 pnl = (position.entry_price - exit_price) * size
                 pnl_percent = ((position.entry_price - exit_price) / position.entry_price) * 100
             else:
@@ -799,7 +815,7 @@ class Trader:
             trade = Trade(
                 trade_id=order.order_id,
                 pair=pair,
-                side="long",
+                side=position.side,
                 entry_price=position.entry_price,
                 exit_price=exit_price,
                 amount=size,

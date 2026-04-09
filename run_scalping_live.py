@@ -695,7 +695,9 @@ class ScalpingTrader:
             entry_price = position_data['entry_price']
             pos_side = position_data.get('side', 'long')
 
-            if pos_side == "long":
+            if entry_price <= 0:
+                pnl_pct = 0.0
+            elif pos_side == "long":
                 pnl_pct = ((current_price - entry_price) / entry_price) * 100
             else:
                 pnl_pct = ((entry_price - current_price) / entry_price) * 100
@@ -791,7 +793,9 @@ class ScalpingTrader:
 
                 # Calculate P&L from actual fill prices
                 entry_price = position.entry_price
-                if pos_side == "long":
+                if entry_price <= 0:
+                    pnl_pct = 0.0
+                elif pos_side == "long":
                     pnl_pct = ((exit_price - entry_price) / entry_price) * 100
                 else:
                     pnl_pct = ((entry_price - exit_price) / entry_price) * 100
@@ -900,6 +904,9 @@ class ScalpingTrader:
                     )
                     return
 
+                if current_price <= 0:
+                    self.logger.warning(f"Invalid price {current_price} for {pair}, skipping entry")
+                    return
                 size = size_usd / current_price
 
                 # Execute order on Kraken

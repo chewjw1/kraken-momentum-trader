@@ -249,8 +249,9 @@ class TestScalpingStrategy:
     def test_take_profit_exit(self):
         """Should exit at take profit threshold."""
         # Strategy uses OHLC close price, so we need to set that to the exit price
-        # Position entered at 100, price rises to 104.6 = +4.6% (above 4.5% TP)
-        closes = [100.0] * 29 + [104.6]  # Last close is the current price
+        # Position entered at 100, price rises to 104.6 = +4.6% (above ATR-based TP)
+        # Need 45 candles minimum for MACD (26+9) + buffer
+        closes = [100.0] * 44 + [104.6]  # Last close is the current price
         market_data = create_market_data("BTC/USD", closes)
 
         position = Position(
@@ -269,8 +270,9 @@ class TestScalpingStrategy:
     def test_stop_loss_exit(self):
         """Should exit at stop loss threshold."""
         # Strategy uses OHLC close price, so we need to set that to the exit price
-        # Position entered at 100, price drops to 97.9 = -2.1% (below -2% SL)
-        closes = [100.0] * 29 + [97.9]  # Last close is the current price
+        # Position entered at 100, price drops to 97.9 = -2.1% (below ATR-based SL)
+        # Need 45 candles minimum for MACD (26+9) + buffer
+        closes = [100.0] * 44 + [97.9]  # Last close is the current price
         market_data = create_market_data("BTC/USD", closes)
 
         position = Position(
@@ -288,10 +290,11 @@ class TestScalpingStrategy:
 
     def test_hold_position_within_thresholds(self):
         """Should hold position within TP/SL thresholds."""
-        closes = [100.0] * 30
+        # Need 45 candles minimum for MACD (26+9) + buffer
+        closes = [100.0] * 45
         market_data = create_market_data("BTC/USD", closes, ticker_price=102.0)
 
-        # Position at 100, current price at 102 = +2%
+        # Position at 100, current close at 100 = 0% (within thresholds)
         position = Position(
             pair="BTC/USD",
             side="long",
@@ -308,7 +311,8 @@ class TestScalpingStrategy:
     def test_no_entry_without_confirmations(self):
         """Should not enter without sufficient confirmations."""
         # Flat market with no signals
-        closes = [100.0] * 30
+        # Need 45 candles minimum for MACD (26+9) + buffer
+        closes = [100.0] * 45
         market_data = create_market_data("BTC/USD", closes)
 
         signal = self.strategy.analyze(market_data, None)
@@ -905,8 +909,9 @@ class TestRegimeDetector:
     def test_sideways_regime_detection(self):
         """Should detect sideways regime from flat prices."""
         import math
-        # Oscillate around 100 with small amplitude
-        prices = [100.0 + 2.0 * math.sin(i * 0.1) for i in range(250)]
+        # Oscillate around 100 with small amplitude and fast frequency
+        # so each 50-period SMA window contains ~4 full cycles (near-zero slope)
+        prices = [100.0 + 2.0 * math.sin(i * 0.5) for i in range(250)]
         result = self.detector.detect(prices)
         assert result.regime == MarketRegime.SIDEWAYS
 

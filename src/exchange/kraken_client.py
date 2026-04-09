@@ -487,6 +487,8 @@ class KrakenClient:
 
         result = self._request("POST", "private/AddOrder", data, private=True)
 
+        if "txid" not in result or not result["txid"]:
+            raise KrakenAPIError("No order ID returned from exchange")
         order_id = result["txid"][0]
 
         return Order(
