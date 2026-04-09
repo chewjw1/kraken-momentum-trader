@@ -264,9 +264,64 @@ class ScalpingTrader:
                     except ValueError:
                         pass
                 self.indicator_snapshots = state.get('indicator_snapshots', {})
-                self.logger.info("Loaded saved state")
+
+                # Restore initial_capital from state so the circuit breaker
+                # uses the paper trading capital, not the (much smaller) real
+                # Kraken balance.  Without this, drawdown % is computed
+                # against e.g. $800 instead of $4400 and the CB triggers on
+                # every minor loss.
+                if 'initial_capital' in state:
+                    self.initial_capital = state['initial_capital']
+                    self.circuit_breaker.initial_capital = self.initial_capital
+
+                self.logger.info("Loaded saved state",
+                                 capital=f"${self.capital:.2f}",
+                                 initial_capital=f"${self.initial_capital:.2f}",
+                                 positions=len(self.positions))
+
+                # Reconcile paper balances with open positions.
+                # On restart, paper balances are initialized from the real
+                # Kraken account (which has zero crypto for paper positions).
+                # Without this, exit orders fail with "Insufficient balance"
+                # and positions get stuck open forever.
+                if self.paper_trading and self.positions:
+                    self._reconcile_paper_balances()
+
             except Exception as e:
                 self.logger.error(f"Error loading state: {e}")
+
+    def _reconcile_paper_balances(self) -> None:
+        """Ensure paper balances reflect open positions from saved state.
+
+        On restart the KrakenClient re-initialises paper balances from the
+        real Kraken account, which holds zero crypto for simulated positions.
+        This causes every exit order to fail with 'Insufficient balance',
+        leaving positions stuck open indefinitely.
+
+        Fix: for every open position, ensure the paper balance for the base
+        asset is at least as large as the position size.
+        """
+        for pair, pos in self.positions.items():
+            base = pair.split("/")[0]
+            size = pos.get('size', 0)
+            if size > 0:
+                current = self.client._paper_balances.get(base, 0)
+                if current < size:
+                    self.client._paper_balances[base] = size
+                    self.logger.info(
+                        f"Reconciled paper balance for {base}: "
+                        f"{current:.6f} -> {size:.6f} (open position in {pair})"
+                    )
+
+        # Also reconcile USD balance so new entry orders don't fail
+        # when the real Kraken balance is smaller than the paper capital.
+        deployed = sum(p.get('size_usd', 0) for p in self.positions.values())
+        available_capital = self.capital - deployed
+        if self.client._paper_balances.get("USD", 0) < available_capital:
+            self.client._paper_balances["USD"] = available_capital
+            self.logger.info(
+                f"Reconciled paper USD balance to ${available_capital:.2f}"
+            )
 
     def _save_state(self) -> None:
         """Save state to disk."""
@@ -274,6 +329,8 @@ class ScalpingTrader:
             'positions': self.positions,
             'metrics': self.metrics,
             'capital': self.capital,
+            'initial_capital': self.initial_capital,
+            'paper_trading': self.paper_trading,
             'pair_manager': self.pair_manager.to_dict(),
             'circuit_breaker': self.circuit_breaker.to_dict(),
             'regime_detector': self.regime_detector.to_dict(),
@@ -904,7 +961,13 @@ class ScalpingTrader:
                 self.circuit_breaker.update_equity(self.capital)
 
                 for pair in self.pairs:
-                    self._process_pair(pair)
+                    try:
+                        self._process_pair(pair)
+                    except Exception as pair_err:
+                        self.logger.error(
+                            f"Error processing {pair}: {pair_err}",
+                            pair=pair,
+                        )
                     time.sleep(1)  # Rate limit between pairs
 
                 self._save_state()
