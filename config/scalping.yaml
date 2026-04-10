@@ -317,22 +317,22 @@ pair_parameters:
     atr_tp_multiplier: 3.75
     short_min_confirmations: 2
 
-# Adaptive pair management
+# Adaptive pair management — more aggressive re-engagement
 adaptive:
   enabled: true
-  min_win_rate: 0.35
-  min_profit_factor: 0.85
+  min_win_rate: 0.38        # 0.35→0.38: slightly higher bar to disable bad pairs
+  min_profit_factor: 0.90   # 0.85→0.90: require near-breakeven minimum
   max_consecutive_losses: 3
-  cooldown_hours: 2.0
-  reenable_win_rate: 0.50
+  cooldown_hours: 1.5       # 2.0→1.5: re-engage faster after cooldown
+  reenable_win_rate: 0.45   # 0.50→0.45: lower bar to re-enable (more trading time)
 
-# Position sizing
+# Position sizing — optimized for max returns with confidence scaling
 position:
   initial_capital: 10000.0
-  size_percent: 20.0
+  size_percent: 25.0        # 20→25%: larger positions for max return capture
   confidence_scaling: true
-  min_scale: 0.5
-  max_scale: 1.5
+  min_scale: 0.6            # 0.5→0.6: don't go too small on low-confidence trades
+  max_scale: 1.8            # 1.5→1.8: go bigger on high-confidence signals
 
 # Fees
 fees:
@@ -345,12 +345,12 @@ execution:
   maker_price_offset: 0.0
   order_timeout_seconds: 60
 
-# Circuit breaker
+# Circuit breaker — balanced protection with faster recovery
 circuit_breaker:
-  global_max_drawdown_pct: 5.0
-  cooldown_hours: 4
-  pair_max_drawdown_pct: 2.0
-  pair_cooldown_hours: 2.0
+  global_max_drawdown_pct: 7.0   # 5→7%: allow more room before global halt
+  cooldown_hours: 2              # 4→2: recover faster from global circuit break
+  pair_max_drawdown_pct: 3.0     # 2→3%: more room per pair before disabling
+  pair_cooldown_hours: 1.0       # 2→1: re-enable pairs faster
   consecutive_loss_limit: 4
 
 # Regime detector
@@ -367,4 +367,4 @@ ema_filter:
 
 # Trading loop
 trading:
-  check_interval_seconds: 120
+  check_interval_seconds: 90   # 120→90: check more frequently for faster signal capture
