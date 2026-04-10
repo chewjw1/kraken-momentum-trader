@@ -60,14 +60,20 @@ class RiskConfig:
     max_position_percent: float = 40.0
     max_total_exposure_percent: float = 200.0  # Increased for Martingale pyramiding
 
+    # Stop loss / take profit
+    stop_loss_percent: float = 5.0  # General stop loss percentage
+    take_profit_percent: float = 0.0  # Exit when profit reaches this % (0 = disabled)
+
     # Trailing stop configuration
     use_trailing_stop: bool = True
     trailing_stop_percent: float = 5.0  # Exit when price drops this % from peak
     trailing_stop_activation_percent: float = 5.0  # Minimum profit before trailing activates
     initial_stop_loss_percent: float = 0.0  # Initial stop loss (0 = disabled)
 
-    # Take profit configuration (0 = disabled)
-    take_profit_percent: float = 0.0  # Exit when profit reaches this %
+    # Daily limits (0 = unlimited)
+    max_daily_trades: int = 0
+    max_daily_loss_percent: float = 0.0
+    max_drawdown_percent: float = 0.0
 
     # Martingale configuration
     martingale: MartingaleConfig = None

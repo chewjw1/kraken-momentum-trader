@@ -1,0 +1,370 @@
+# Scalping Strategy Configuration (v9 — Bug-fixed, No Trailing Stops)
+# Enhanced with: Stochastic, MACD, OBV, ATR dynamic stops, short selling,
+#   doji candle filter, trailing stops (available but disabled)
+# Validated with 1-minute execution simulation on 730 days of Kraken OHLCVT data
+#
+# Bug fixes applied in v9:
+#   - CRITICAL: Removed breakeven stop that generated phantom exit prices (+5%
+#     above entry via 0.05 buffer bug), inflating returns from +842% to +1440%
+#   - CRITICAL: Live trader slope thresholds matched to regime detector (0.02)
+#   - CRITICAL: Live trader now loads all per-pair params on startup
+#   - HIGH: ATOM/USD ATR TP/SL ratio corrected (was inverted: TP < SL)
+#   - HIGH: LINK/USD params reverted to pre-trailing-stop optimization
+#   - HIGH: Regime classifier tie-breaking fixed (was always favoring BULL)
+#   - MEDIUM: Optimizer trailing stop uses regime-adjusted TP
+#   - LOW: segment_by_regime off-by-one dropping last candle
+#
+# Trailing stops disabled (trailing_stops.enabled: false) because params were
+# optimized without them. Enable + re-optimize for trailing stop experiments.
+#
+# 1-Minute Execution Validated Results (NO trailing stops):
+#   AVAX/USD: +216.23% (12h,  90 trades, 54.4% WR, PF 1.68, DD 13.5%)
+#   NEAR/USD: +122.51% (4h,  126 trades, 46.8% WR, PF 1.27, DD 14.9%)
+#   ATOM/USD: +120.22% (12h,  68 trades, 52.9% WR, PF 1.50, DD 17.9%)
+#   DOT/USD:  +113.94% (4h,   63 trades, 57.1% WR, PF 1.80, DD 8.1%)
+#   SOL/USD:   +92.39% (12h,  93 trades, 52.7% WR, PF 1.30, DD 10.3%)
+#   ETH/USD:   +68.99% (4h,  115 trades, 49.6% WR, PF 1.27, DD 8.6%)
+#   LINK/USD:  +65.31% (4h,  154 trades, 49.4% WR, PF 1.13, DD 13.9%)
+#   BTC/USD:   +17.80% (4h,   84 trades, 51.2% WR, PF 1.19, DD 5.0%)
+#   XRP/USD:   +13.66% (4h,   77 trades, 50.6% WR, PF 1.07, DD 14.3%)
+#   POL/USD:   +11.34% (12h, 102 trades, 49.0% WR, PF 1.03, DD 14.0%)
+#
+# All 10 pairs profitable. Total: +842% over 2 years | Avg: +84%/pair
+strategy:
+  name: "scalping"
+
+  # Default candle interval (overridden per-pair where needed)
+  candle_interval: 240        # 4-hour candles (default)
+  take_profit_percent: 4.5    # Static fallback — ATR dynamic TP preferred
+  stop_loss_percent: 2.5      # Static fallback — ATR dynamic SL preferred
+  min_confirmations: 3        # Minimum confirmations for long entry
+
+# Core oscillators (defaults)
+indicators:
+  rsi:
+    period: 10
+    oversold: 28.0
+    overbought: 70.0
+
+  stochastic:
+    k_period: 13
+    d_period: 3
+    oversold: 23.0
+    overbought: 75.0
+
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+
+  bollinger:
+    period: 20
+    std_dev: 2.0
+    squeeze_threshold: 3.0
+
+  vwap:
+    threshold_percent: 0.5
+
+  volume:
+    spike_threshold: 1.5
+
+  obv:
+    sma_period: 20
+
+  atr:
+    period: 14
+    stop_multiplier: 2.5
+    tp_multiplier: 2.75
+    use_dynamic_stops: true
+
+# Trailing stops — disabled because current params were optimized without them.
+# Enable for backtesting/optimization experiments only.
+trailing_stops:
+  enabled: false          # Set true to activate trailing stop logic
+  trail_trigger_pct: 0.5  # Start trailing at 50% of TP progress
+  trail_lock_pct: 0.5     # Lock in 50% of peak unrealized profit
+
+# Short selling configuration
+shorting:
+  enabled: true
+  min_confirmations: 3
+
+# Trading pairs — ordered by realistic validated performance
+# Each pair uses its best-performing interval (4h or 12h)
+pairs:
+  - AVAX/USD   # 12h — +216%, PF 1.68, DD 13.5%
+  - NEAR/USD   # 4h  — +123%, PF 1.27, DD 14.9%
+  - ATOM/USD   # 12h — +120%, PF 1.50, DD 17.9%
+  - DOT/USD    # 4h  — +114%, PF 1.80, DD 8.1%
+  - SOL/USD    # 12h —  +92%, PF 1.30, DD 10.3%
+  - ETH/USD    # 4h  —  +69%, PF 1.27, DD 8.6%
+  - LINK/USD   # 4h  —  +65%, PF 1.13, DD 13.9%
+  - BTC/USD    # 4h  —  +18%, PF 1.19, DD 5.0%
+  - XRP/USD    # 4h  —  +14%, PF 1.07, DD 14.3%
+  - POL/USD    # 12h —  +11%, PF 1.03, DD 14.0%
+# Per-pair parameters — HYBRID: 4h-optimized or 12h-optimized per pair
+# Pairs with candle_interval: 720 use 12h candles; others use default 240 (4h)
+pair_parameters:
+  # ============================================================
+  # 4h INTERVAL PAIRS (validated profitable with 1m execution)
+  # ============================================================
+
+  DOT/USD:
+    # 1m-validated: +116.40%, PF 1.79, DD 8.2%, Sharpe 0.27
+    take_profit_percent: 1.5
+    stop_loss_percent: 3.5
+    rsi_period: 9
+    rsi_oversold: 30
+    rsi_overbought: 75
+    bb_period: 10
+    bb_std_dev: 2.25
+    vwap_threshold_percent: 0.7
+    volume_spike_threshold: 1.25
+    min_confirmations: 4
+    stoch_k_period: 21
+    stoch_oversold: 25
+    stoch_overbought: 70
+    atr_period: 14
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 3.5
+    short_min_confirmations: 4
+
+  NEAR/USD:
+    # 1m-validated: +104.06%, PF 1.22, DD 17.1%, Sharpe 0.10
+    take_profit_percent: 4.0
+    stop_loss_percent: 1.5
+    rsi_period: 12
+    rsi_oversold: 30
+    rsi_overbought: 80
+    bb_period: 30
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.3
+    volume_spike_threshold: 2.25
+    min_confirmations: 4
+    stoch_k_period: 5
+    stoch_oversold: 30
+    stoch_overbought: 80
+    atr_period: 12
+    atr_stop_multiplier: 2.75
+    atr_tp_multiplier: 4.0
+    short_min_confirmations: 3
+
+  ETH/USD:
+    # 1m-validated: +63.27%, PF 1.24, DD 8.6%, Sharpe 0.10
+    take_profit_percent: 4.5
+    stop_loss_percent: 0.5
+    rsi_period: 11
+    rsi_oversold: 40
+    rsi_overbought: 75
+    bb_period: 10
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.2
+    volume_spike_threshold: 1.5
+    min_confirmations: 3
+    stoch_k_period: 7
+    stoch_oversold: 20
+    stoch_overbought: 70
+    atr_period: 10
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 4.0
+    short_min_confirmations: 4
+
+  LINK/USD:
+    # Original 4h-optimized params (pre-trailing-stop)
+    take_profit_percent: 2.5
+    stop_loss_percent: 4.0
+    rsi_period: 5
+    rsi_oversold: 25
+    rsi_overbought: 70
+    bb_period: 15
+    bb_std_dev: 1.75
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 1.75
+    min_confirmations: 3
+    stoch_k_period: 7
+    stoch_oversold: 25
+    stoch_overbought: 80
+    atr_period: 18
+    atr_stop_multiplier: 3.0
+    atr_tp_multiplier: 4.0
+    short_min_confirmations: 4
+
+  XRP/USD:
+    # 1m-validated: +19.77%, PF 1.10, DD 13.7%, Sharpe 0.04
+    take_profit_percent: 8.0
+    stop_loss_percent: 3.0
+    rsi_period: 9
+    rsi_oversold: 25
+    rsi_overbought: 80
+    bb_period: 20
+    bb_std_dev: 2.25
+    vwap_threshold_percent: 0.8
+    volume_spike_threshold: 1.25
+    min_confirmations: 4
+    stoch_k_period: 5
+    stoch_oversold: 20
+    stoch_overbought: 80
+    atr_period: 20
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 2.75
+    short_min_confirmations: 4
+
+  BTC/USD:
+    # 1m-validated: +18.16%, PF 1.19, DD 5.0%, Sharpe 0.08
+    take_profit_percent: 5.0
+    stop_loss_percent: 4.0
+    rsi_period: 9
+    rsi_oversold: 25
+    rsi_overbought: 75
+    bb_period: 30
+    bb_std_dev: 2.5
+    vwap_threshold_percent: 0.5
+    volume_spike_threshold: 2.25
+    min_confirmations: 4
+    stoch_k_period: 19
+    stoch_oversold: 25
+    stoch_overbought: 85
+    atr_period: 10
+    atr_stop_multiplier: 1.5
+    atr_tp_multiplier: 2.0
+    short_min_confirmations: 4
+
+  # ============================================================
+  # 12h INTERVAL PAIRS (switched to 12h — failed at 4h realistic)
+  # ============================================================
+
+  ATOM/USD:
+    # 12h OOS: +22.15%, PF 4.64, DD 3.8% (was +0.9% at 4h realistic)
+    candle_interval: 720
+    take_profit_percent: 9.0
+    stop_loss_percent: 0.5
+    rsi_period: 10
+    rsi_oversold: 30
+    rsi_overbought: 80
+    bb_period: 30
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.8
+    volume_spike_threshold: 2.25
+    min_confirmations: 3
+    stoch_k_period: 19
+    stoch_oversold: 20
+    stoch_overbought: 70
+    atr_period: 10
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 2.75
+    short_min_confirmations: 2
+
+  POL/USD:
+    # 12h OOS: +19.78%, PF 4.48, DD 1.5% (was -20.8% at 4h realistic)
+    candle_interval: 720
+    take_profit_percent: 8.0
+    stop_loss_percent: 4.0
+    rsi_period: 7
+    rsi_oversold: 35
+    rsi_overbought: 60
+    bb_period: 10
+    bb_std_dev: 1.5
+    vwap_threshold_percent: 0.4
+    volume_spike_threshold: 2.25
+    min_confirmations: 1
+    stoch_k_period: 7
+    stoch_oversold: 25
+    stoch_overbought: 85
+    atr_period: 16
+    atr_stop_multiplier: 1.5
+    atr_tp_multiplier: 1.75
+    short_min_confirmations: 3
+
+  SOL/USD:
+    # 12h OOS: +12.87%, PF 2.15, DD 5.2% (was -20.7% at 4h realistic)
+    candle_interval: 720
+    take_profit_percent: 8.5
+    stop_loss_percent: 2.0
+    rsi_period: 11
+    rsi_oversold: 35
+    rsi_overbought: 60
+    bb_period: 30
+    bb_std_dev: 2.25
+    vwap_threshold_percent: 0.9
+    volume_spike_threshold: 1.0
+    min_confirmations: 2
+    stoch_k_period: 11
+    stoch_oversold: 30
+    stoch_overbought: 85
+    atr_period: 18
+    atr_stop_multiplier: 2.0
+    atr_tp_multiplier: 2.5
+    short_min_confirmations: 2
+
+  AVAX/USD:
+    # 12h OOS: +10.33%, PF 1.71, DD 9.2% (was -167% at 4h realistic!)
+    candle_interval: 720
+    take_profit_percent: 8.0
+    stop_loss_percent: 3.5
+    rsi_period: 7
+    rsi_oversold: 25
+    rsi_overbought: 60
+    bb_period: 10
+    bb_std_dev: 2.0
+    vwap_threshold_percent: 0.2
+    volume_spike_threshold: 2.25
+    min_confirmations: 2
+    stoch_k_period: 11
+    stoch_oversold: 25
+    stoch_overbought: 70
+    atr_period: 16
+    atr_stop_multiplier: 3.0
+    atr_tp_multiplier: 3.75
+    short_min_confirmations: 2
+
+# Adaptive pair management — more aggressive re-engagement
+adaptive:
+  enabled: true
+  min_win_rate: 0.38        # 0.35→0.38: slightly higher bar to disable bad pairs
+  min_profit_factor: 0.90   # 0.85→0.90: require near-breakeven minimum
+  max_consecutive_losses: 3
+  cooldown_hours: 1.5       # 2.0→1.5: re-engage faster after cooldown
+  reenable_win_rate: 0.45   # 0.50→0.45: lower bar to re-enable (more trading time)
+
+# Position sizing — optimized for max returns with confidence scaling
+position:
+  initial_capital: 10000.0
+  size_percent: 25.0        # 20→25%: larger positions for max return capture
+  confidence_scaling: true
+  min_scale: 0.6            # 0.5→0.6: don't go too small on low-confidence trades
+  max_scale: 1.8            # 1.5→1.8: go bigger on high-confidence signals
+
+# Fees
+fees:
+  maker_percent: 0.16
+  taker_percent: 0.26
+
+# Order execution
+execution:
+  use_maker_orders: true
+  maker_price_offset: 0.0
+  order_timeout_seconds: 60
+
+# Circuit breaker — balanced protection with faster recovery
+circuit_breaker:
+  global_max_drawdown_pct: 7.0   # 5→7%: allow more room before global halt
+  cooldown_hours: 2              # 4→2: recover faster from global circuit break
+  pair_max_drawdown_pct: 3.0     # 2→3%: more room per pair before disabling
+  pair_cooldown_hours: 1.0       # 2→1: re-enable pairs faster
+  consecutive_loss_limit: 4
+
+# Regime detector
+regime_detector:
+  fast_sma_period: 50
+  slow_sma_period: 200
+  bull_slope_threshold: 0.02
+  bear_slope_threshold: -0.02
+
+# EMA trend filter
+ema_filter:
+  enabled: true
+  bearish_threshold: -0.5
+
+# Trading loop
+trading:
+  check_interval_seconds: 90   # 120→90: check more frequently for faster signal capture

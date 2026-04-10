@@ -211,3 +211,5 @@ claude.exe
 # Data cache and optimization files
 data/cache/
 data/optimization/
+data/kraken_historical/
+data/scalping/

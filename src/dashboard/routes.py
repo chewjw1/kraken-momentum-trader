@@ -68,6 +68,10 @@ def dashboard():
     # Get current state
     current_state = state_machine.get('state', 'unknown')
 
+    # Get regime data
+    regime_info = data_service.get_regime_info()
+    global_regime = regime_info.get('_global', {})
+
     return render_template(
         'dashboard.html',
         metrics=metrics,
@@ -75,7 +79,8 @@ def dashboard():
         recent_trades=recent_trades,
         pairs_summary=pairs_summary,
         capital=capital,
-        state=current_state
+        state=current_state,
+        global_regime=global_regime,
     )
 
 
@@ -136,7 +141,7 @@ def performance():
     )
 
 
-# API endpoints for potential AJAX refresh
+# API endpoints for AJAX
 @bp.route('/api/metrics')
 @login_required
 def api_metrics():
@@ -161,3 +166,18 @@ def api_positions():
                 'num_entries': len(entries)
             })
     return jsonify(positions)
+
+
+@bp.route('/api/pair/<path:pair>')
+@login_required
+def api_pair_detail(pair):
+    """JSON endpoint for detailed pair metrics and trade history."""
+    detail = data_service.get_pair_detail(pair)
+    return jsonify(detail)
+
+
+@bp.route('/api/regime')
+@login_required
+def api_regime():
+    """JSON endpoint for regime information."""
+    return jsonify(data_service.get_regime_info())

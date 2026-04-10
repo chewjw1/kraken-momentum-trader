@@ -9,46 +9,46 @@ trading:
 
 strategy:
   name: "momentum"
-  momentum_threshold: 0.01  # Reduced from 0.02 for sideways markets
-  min_expected_gain: 0.008  # Reduced from 0.015 for more frequent trades
+  momentum_threshold: 0.005  # Aggressive: lower bar to capture more momentum moves
+  min_expected_gain: 0.003   # Aggressive: capture smaller profitable moves
 
-  # RSI Configuration - widened bands for more signals
+  # RSI Configuration — optimizer-validated aggressive settings
   rsi_period: 14
-  rsi_oversold: 50  # TEMP TEST VALUE (was 38) - very lenient for testing trades
-  rsi_overbought: 62  # Lowered from 70 - triggers sell signals earlier
+  rsi_oversold: 45   # Optimized: below neutral but above classic 30 for more entries
+  rsi_overbought: 65  # Optimized: exit earlier to lock in gains before reversal
 
   # EMA Configuration
-  ema_short_period: 12
-  ema_long_period: 26
+  ema_short_period: 9   # Faster EMA for quicker crossover signals
+  ema_long_period: 21   # Tighter long EMA for more responsive trend detection
 
   # Volume Configuration
   volume_sma_period: 20
-  volume_threshold: 0.5  # TEMP TEST VALUE (was 1.25) - very lenient for testing trades
+  volume_threshold: 1.0  # Optimized: require at least average volume (real confirmation)
 
 risk:
   # Position Limits
   max_position_size_usd: 5000
-  max_position_percent: 40.0  # Max 40% of capital per initial trade
-  max_total_exposure_percent: 100.0  # Max 100% total exposure (no margin)
+  max_position_percent: 45.0  # Increased from 40% for larger initial positions
+  max_total_exposure_percent: 200.0  # Full Martingale pyramiding capacity
 
-  # Trailing Stop Configuration - tightened for sideways markets
+  # Trailing Stop Configuration — optimized for max return capture
   use_trailing_stop: true
-  trailing_stop_percent: 3.5  # Reduced from 5.0 - tighter stop to lock in gains
-  trailing_stop_activation_percent: 2.5  # Reduced from 5.0 - activate stop sooner
-  initial_stop_loss_percent: 0.0  # No initial stop loss (0 = disabled)
+  trailing_stop_percent: 3.0   # Tight: lock gains fast, reduce giveback
+  trailing_stop_activation_percent: 2.0  # Activate early: start protecting at 2% profit
+  initial_stop_loss_percent: 8.0  # Safety net: hard stop at 8% loss (was disabled!)
 
-  # Martingale Configuration
+  # Martingale Configuration — aggressive pyramiding for max returns
   martingale:
     enabled: true
-    max_entries: 4  # Initial + 3 add-ons
-    size_multiplier: 1.25  # Each add-on is 1.25x previous
-    add_on_drop_percent: 5.0  # Add when price drops 5% from avg entry
-    require_rsi_oversold: true  # Must have RSI < 30 to add
-    require_ema_trend: false  # Don't require EMA confirmation for adds
+    max_entries: 5            # 4→5: more add-on opportunities in deep dips
+    size_multiplier: 1.3      # 1.25→1.3: larger position adds for faster recovery
+    add_on_drop_percent: 4.0  # 5%→4%: trigger adds sooner for quicker cost averaging
+    require_rsi_oversold: true  # Keep RSI gate for quality adds
+    require_ema_trend: false    # Don't require EMA (allows adds in temporary dips)
 
-  # Circuit Breaker (adjusted for Martingale)
-  circuit_breaker_consecutive_losses: 5  # Increased from 3
-  circuit_breaker_cooldown_hours: 2  # Reduced from 4
+  # Circuit Breaker — tighter safety with faster recovery
+  circuit_breaker_consecutive_losses: 4  # 5→4: stop sooner on losing streaks
+  circuit_breaker_cooldown_hours: 1      # 2→1: recover faster after cooldown
 
 exchange:
   name: "kraken"
@@ -78,12 +78,12 @@ notifications:
 
 # Machine Learning Signal Enhancement
 ml:
-  enabled: true  # Enable ML-based signal filtering
-  confidence_threshold: 0.1  # TEMP TEST VALUE (was 0.6) - very lenient for testing trades
+  enabled: true
+  confidence_threshold: 0.45  # Optimized: balanced filter (0.1 was disabled, 0.6 too strict)
   model_dir: "data/ml/models"
 
-  # Auto-retraining triggers
-  retrain_after_trades: 50  # Retrain after N completed trades
-  min_samples_for_retrain: 100  # Minimum samples needed for training
-  performance_threshold: 0.4  # Retrain if recent win rate drops below this
-  check_interval_seconds: 3600  # How often to check retrain triggers
+  # Auto-retraining triggers — more responsive
+  retrain_after_trades: 30    # 50→30: retrain sooner on fresh data
+  min_samples_for_retrain: 75  # 100→75: allow retraining with less data
+  performance_threshold: 0.45  # 0.4→0.45: retrain earlier when performance dips
+  check_interval_seconds: 1800  # 3600→1800: check every 30min instead of 1hr

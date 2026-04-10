@@ -208,8 +208,10 @@ class DiscordNotifier:
             True if sent successfully.
         """
         mode_indicator = " [PAPER]" if paper_trading else ""
-        pnl_emoji = "" if trade.pnl >= 0 else ""
-        pnl_color = 0x00FF00 if trade.pnl >= 0 else 0xFF0000
+        pnl = trade.pnl or 0.0
+        pnl_percent = trade.pnl_percent or 0.0
+        pnl_emoji = "" if pnl >= 0 else ""
+        pnl_color = 0x00FF00 if pnl >= 0 else 0xFF0000
 
         embed = self._create_embed(
             title=f"{pnl_emoji} CLOSE {trade.pair}{mode_indicator}",
@@ -218,7 +220,7 @@ class DiscordNotifier:
             fields=[
                 {"name": "Exit Price", "value": f"${trade.price:,.2f}", "inline": True},
                 {"name": "Size", "value": f"{trade.size:.6f}", "inline": True},
-                {"name": "P&L", "value": f"${trade.pnl:+,.2f} ({trade.pnl_percent:+.2f}%)", "inline": True},
+                {"name": "P&L", "value": f"${pnl:+,.2f} ({pnl_percent:+.2f}%)", "inline": True},
                 {"name": "Reason", "value": trade.reason or "Exit signal", "inline": False},
             ],
             footer="Kraken Momentum Trader"

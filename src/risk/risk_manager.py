@@ -4,7 +4,7 @@ Coordinates all risk controls and safeguards.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, date, timezone
 from typing import Optional
 
 from ..config.settings import RiskConfig, get_settings
@@ -82,6 +82,11 @@ class RiskManager:
         # Capital tracking
         self._total_capital = 10000.0  # Will be updated from balances
 
+        # Daily tracking
+        self._daily_trades = 0
+        self._daily_pnl = 0.0
+        self._daily_reset_date = date.today()
+
         logger.info(
             "Risk manager initialized",
             max_position_percent=config.max_position_percent,
@@ -107,6 +112,14 @@ class RiskManager:
         """
         self._current_exposure = exposure
 
+    def _check_daily_reset(self) -> None:
+        """Reset daily counters if a new day has started."""
+        today = date.today()
+        if today != self._daily_reset_date:
+            self._daily_trades = 0
+            self._daily_pnl = 0.0
+            self._daily_reset_date = today
+
     def can_trade(self) -> RiskCheck:
         """
         Check if trading is currently allowed.
@@ -114,6 +127,24 @@ class RiskManager:
         Returns:
             RiskCheck indicating if trading is allowed.
         """
+        self._check_daily_reset()
+
+        # Check daily trade limit
+        if self.config.max_daily_trades > 0 and self._daily_trades >= self.config.max_daily_trades:
+            return RiskCheck(
+                allowed=False,
+                reason=f"Daily trade limit reached: {self._daily_trades}/{self.config.max_daily_trades}"
+            )
+
+        # Check daily loss limit
+        if self.config.max_daily_loss_percent > 0 and self._daily_pnl < 0:
+            max_daily_loss = self._total_capital * (self.config.max_daily_loss_percent / 100)
+            if abs(self._daily_pnl) >= max_daily_loss:
+                return RiskCheck(
+                    allowed=False,
+                    reason=f"Daily loss limit reached: ${abs(self._daily_pnl):.2f}/${max_daily_loss:.2f}"
+                )
+
         # Check circuit breaker
         if not self.circuit_breaker.is_trading_allowed():
             state = self.circuit_breaker.get_state()
@@ -332,6 +363,12 @@ class RiskManager:
             pnl: Trade profit/loss.
             pair: Trading pair.
         """
+        self._check_daily_reset()
+
+        # Update daily counters
+        self._daily_trades += 1
+        self._daily_pnl += pnl
+
         if pnl < 0:
             self.circuit_breaker.record_loss()
             logger.risk_event(
@@ -368,11 +405,26 @@ class RiskManager:
         Returns:
             RiskLimits with current status.
         """
+        self._check_daily_reset()
         max_exposure = self._total_capital * (self.config.max_total_exposure_percent / 100)
 
+        # Daily trade remaining
+        if self.config.max_daily_trades > 0:
+            daily_trades_remaining = max(0, self.config.max_daily_trades - self._daily_trades)
+        else:
+            daily_trades_remaining = -1
+
+        # Daily loss remaining
+        if self.config.max_daily_loss_percent > 0:
+            max_daily_loss = self._total_capital * (self.config.max_daily_loss_percent / 100)
+            current_loss = abs(self._daily_pnl) if self._daily_pnl < 0 else 0.0
+            daily_loss_remaining = max(0.0, max_daily_loss - current_loss)
+        else:
+            daily_loss_remaining = -1
+
         return RiskLimits(
-            daily_trades_remaining=-1,  # No limit
-            daily_loss_remaining=-1,  # No limit
+            daily_trades_remaining=daily_trades_remaining,
+            daily_loss_remaining=daily_loss_remaining,
             max_position_size=self.position_sizer.calculate_max_position(self._total_capital),
             current_exposure=self._current_exposure,
             max_exposure=max_exposure,
@@ -391,12 +443,21 @@ class RiskManager:
             "total_capital": self._total_capital,
             "current_exposure": self._current_exposure,
             "circuit_breaker": self.circuit_breaker.to_dict(),
+            "daily_trades": self._daily_trades,
+            "daily_pnl": self._daily_pnl,
+            "daily_reset_date": self._daily_reset_date.isoformat(),
         }
 
     def from_dict(self, data: dict) -> None:
         """Restore state from dictionary."""
         self._total_capital = data.get("total_capital", 10000.0)
         self._current_exposure = data.get("current_exposure", 0.0)
+        self._daily_trades = data.get("daily_trades", 0)
+        self._daily_pnl = data.get("daily_pnl", 0.0)
+        if data.get("daily_reset_date"):
+            self._daily_reset_date = date.fromisoformat(data["daily_reset_date"])
+        else:
+            self._daily_reset_date = date.today()
 
         if "circuit_breaker" in data:
             self.circuit_breaker.from_dict(data["circuit_breaker"])

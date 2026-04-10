@@ -1,0 +1,1294 @@
+#!/usr/bin/env python3
+"""
+Scalping Strategy Parameter Optimizer
+
+Finds optimal scalping parameters using Bayesian optimization (Optuna)
+with historical data from Binance via CCXT.
+
+Usage:
+    # Quick test (10 trials)
+    python run_scalping_optimizer.py --pairs BTC/USD --trials 10
+
+    # Full optimization for all pairs
+    python run_scalping_optimizer.py --pairs BTC/USD ETH/USD SOL/USD --trials 50
+
+    # Per-pair optimization (recommended)
+    python run_scalping_optimizer.py --per-pair --pairs BTC/USD ETH/USD SOL/USD --trials 30
+"""
+
+import argparse
+import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Dict, List, Optional, Any, Tuple
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+try:
+    import optuna
+    from optuna.trial import TrialState
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    optuna = None
+    OPTUNA_AVAILABLE = False
+
+from src.backtest.ccxt_data_provider import CCXTDataProvider
+from src.backtest.data import HistoricalDataManager
+from src.backtest.kraken_csv_provider import KrakenCSVProvider, CryptoCompareProvider
+from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
+from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
+from src.strategy.base_strategy import MarketData, Position, SignalType
+from src.exchange.kraken_client import OHLC
+from src.observability.logger import get_logger, configure_logging
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class ScalpingOptimizerConfig:
+    """Configuration for scalping optimizer."""
+    n_trials: int = 100
+    timeout_seconds: int = 7200
+    pairs: List[str] = None
+    start_date: datetime = None
+    end_date: datetime = None
+    initial_capital: float = 10000.0
+    interval: int = 240  # 4-hour candles (Kraken has ~120 days of 4h data)
+    fee_percent: float = 0.16  # Maker fee (use limit orders)
+    position_size_percent: float = 20.0
+    storage_path: str = "data/optimization/scalping_study.db"
+    study_name: str = "scalping_optimization_v2"
+    cache_dir: str = "data/cache/ccxt"
+    recency_weight: float = 2.0  # Weight multiplier for recent data
+
+    def __post_init__(self):
+        if self.pairs is None:
+            self.pairs = ["BTC/USD", "ETH/USD"]
+        if self.end_date is None:
+            self.end_date = datetime.now(timezone.utc)
+        if self.start_date is None:
+            self.start_date = self.end_date - timedelta(days=180)  # 6 months default
+
+
+# Scalping parameter ranges for optimization
+SCALPING_PARAMETER_RANGES = {
+    # Take profit (main target) - used as fallback when ATR not available
+    "take_profit_percent": {"low": 1.5, "high": 10.0, "step": 0.5},
+    # Stop loss - used as fallback when ATR not available
+    "stop_loss_percent": {"low": 0.5, "high": 4.0, "step": 0.5},
+    # RSI settings
+    "rsi_period": {"low": 5, "high": 14, "step": 1, "type": "int"},
+    "rsi_oversold": {"low": 20, "high": 40, "step": 5, "type": "int"},
+    "rsi_overbought": {"low": 60, "high": 80, "step": 5, "type": "int"},
+    # Bollinger settings
+    "bb_period": {"low": 10, "high": 30, "step": 5, "type": "int"},
+    "bb_std_dev": {"low": 1.5, "high": 2.5, "step": 0.25},
+    # VWAP threshold
+    "vwap_threshold_percent": {"low": 0.1, "high": 1.0, "step": 0.1},
+    # Volume spike
+    "volume_spike_threshold": {"low": 1.0, "high": 2.5, "step": 0.25},
+    # Confirmations required
+    "min_confirmations": {"low": 1, "high": 4, "step": 1, "type": "int"},
+    # Stochastic Oscillator
+    "stoch_k_period": {"low": 5, "high": 21, "step": 2, "type": "int"},
+    "stoch_oversold": {"low": 15, "high": 30, "step": 5, "type": "int"},
+    "stoch_overbought": {"low": 70, "high": 85, "step": 5, "type": "int"},
+    # ATR-based dynamic stops
+    "atr_period": {"low": 10, "high": 20, "step": 2, "type": "int"},
+    "atr_stop_multiplier": {"low": 1.0, "high": 3.0, "step": 0.25},
+    "atr_tp_multiplier": {"low": 1.5, "high": 4.0, "step": 0.25},
+    # Short selling
+    "short_min_confirmations": {"low": 2, "high": 4, "step": 1, "type": "int"},
+}
+
+
+class ScalpingBacktestRunner:
+    """Runs scalping backtests with given parameters."""
+
+    def __init__(
+        self,
+        initial_capital: float = 10000.0,
+        position_size_percent: float = 20.0,
+        fee_percent: float = 0.16,
+        trailing_stops_enabled: bool = False,
+    ):
+        self.initial_capital = initial_capital
+        self.position_size_percent = position_size_percent
+        self.fee_percent = fee_percent
+        self.trailing_stops_enabled = trailing_stops_enabled
+
+    def run(
+        self,
+        candles: List[OHLC],
+        pair: str,
+        params: Dict[str, Any],
+        regime_candles: Optional[List[OHLC]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run a backtest with given parameters.
+
+        Args:
+            regime_candles: Optional candles for regime detection (e.g. BTC/USD).
+                            If None, uses the traded pair's own candles.
+
+        Returns:
+            Dictionary with metrics: total_return, sharpe_ratio, win_rate, etc.
+        """
+        # Create strategy with these params
+        config = ScalpingConfig(
+            take_profit_percent=params.get("take_profit_percent", 4.5),
+            stop_loss_percent=params.get("stop_loss_percent", 2.0),
+            rsi_period=params.get("rsi_period", 7),
+            rsi_oversold=params.get("rsi_oversold", 30.0),
+            rsi_overbought=params.get("rsi_overbought", 70.0),
+            bb_period=params.get("bb_period", 20),
+            bb_std_dev=params.get("bb_std_dev", 2.0),
+            vwap_threshold_percent=params.get("vwap_threshold_percent", 0.3),
+            volume_spike_threshold=params.get("volume_spike_threshold", 1.5),
+            min_confirmations=params.get("min_confirmations", 2),
+            fee_percent=self.fee_percent,
+            # New indicator params
+            stoch_k_period=params.get("stoch_k_period", 14),
+            stoch_oversold=params.get("stoch_oversold", 20.0),
+            stoch_overbought=params.get("stoch_overbought", 80.0),
+            macd_fast=params.get("macd_fast", 12),
+            macd_slow=params.get("macd_slow", 26),
+            macd_signal=params.get("macd_signal", 9),
+            atr_period=params.get("atr_period", 14),
+            atr_stop_multiplier=params.get("atr_stop_multiplier", 1.5),
+            atr_tp_multiplier=params.get("atr_tp_multiplier", 2.0),
+            use_atr_stops=params.get("use_atr_stops", True),
+            shorting_enabled=params.get("shorting_enabled", True),
+            short_min_confirmations=params.get("short_min_confirmations", 3),
+        )
+
+        strategy = ScalpingStrategy(config)
+        base_config = config  # Save for regime-adjusted rebuilds
+
+        # Regime detector for mid-backtest adaptation
+        regime_detector = RegimeDetector(RegimeConfig())
+        current_regime = MarketRegime.UNKNOWN
+
+        # Run backtest
+        capital = self.initial_capital
+        peak_capital = capital
+        trades = []
+
+        in_position = False
+        entry_price = 0.0
+        entry_time = None
+        position_size_usd = 0.0
+        position_side = "long"
+
+        # Trailing stop state
+        best_price = 0.0
+        trailing_stop_price = 0.0
+        breakeven_triggered = False
+
+        lookback = max(config.bb_period, config.rsi_period, config.macd_slow + config.macd_signal, config.atr_period) + 5
+
+        for i in range(lookback, len(candles)):
+            # Detect regime every 50 candles and adjust strategy
+            if i % 50 == 0 and i >= 200:
+                # Use BTC candles for regime if available (matches live trader)
+                r_source = regime_candles if regime_candles else candles
+                all_candles_so_far = r_source[:min(i + 1, len(r_source))]
+                closes = [c.close for c in all_candles_so_far]
+                highs = [c.high for c in all_candles_so_far]
+                lows = [c.low for c in all_candles_so_far]
+                result = regime_detector.detect(closes, highs, lows)
+                if result.regime != current_regime:
+                    current_regime = result.regime
+                    adj = REGIME_ADJUSTMENTS.get(current_regime, REGIME_ADJUSTMENTS[MarketRegime.UNKNOWN])
+                    tp_mult = adj.get('take_profit_multiplier', 1.0)
+                    sl_mult = adj.get('stop_loss_multiplier', 1.0)
+                    conf_offset = adj.get('min_confirmations_offset', 0)
+                    ema_enabled = adj.get('ema_filter_enabled', True)
+                    adjusted_config = ScalpingConfig(
+                        take_profit_percent=base_config.take_profit_percent * tp_mult,
+                        stop_loss_percent=base_config.stop_loss_percent * sl_mult,
+                        rsi_period=base_config.rsi_period,
+                        rsi_oversold=base_config.rsi_oversold,
+                        rsi_overbought=base_config.rsi_overbought,
+                        bb_period=base_config.bb_period,
+                        bb_std_dev=base_config.bb_std_dev,
+                        vwap_threshold_percent=base_config.vwap_threshold_percent,
+                        volume_spike_threshold=base_config.volume_spike_threshold,
+                        min_confirmations=max(1, base_config.min_confirmations + conf_offset),
+                        fee_percent=base_config.fee_percent,
+                        ema_filter_enabled=ema_enabled,
+                        stoch_k_period=base_config.stoch_k_period,
+                        stoch_d_period=base_config.stoch_d_period,
+                        stoch_oversold=base_config.stoch_oversold,
+                        stoch_overbought=base_config.stoch_overbought,
+                        macd_fast=base_config.macd_fast,
+                        macd_slow=base_config.macd_slow,
+                        macd_signal=base_config.macd_signal,
+                        atr_period=base_config.atr_period,
+                        atr_stop_multiplier=base_config.atr_stop_multiplier,
+                        atr_tp_multiplier=base_config.atr_tp_multiplier,
+                        use_atr_stops=base_config.use_atr_stops,
+                        shorting_enabled=base_config.shorting_enabled,
+                        short_min_confirmations=base_config.short_min_confirmations,
+                    )
+                    strategy = ScalpingStrategy(adjusted_config)
+
+            window = candles[i - lookback:i + 1]
+            current = candles[i]
+
+            market_data = MarketData(
+                pair=pair,
+                ohlc=window,
+                prices=[c.close for c in window],
+                volumes=[c.volume for c in window],
+                ticker=None
+            )
+
+            if in_position:
+                # Trailing stop logic (only when enabled)
+                trailing_hit = False
+                if self.trailing_stops_enabled:
+                    if position_side == "long":
+                        if current.high > best_price:
+                            best_price = current.high
+                        unrealized_pct = ((best_price - entry_price) / entry_price) * 100
+                    else:
+                        if best_price == 0.0 or current.low < best_price:
+                            best_price = current.low
+                        unrealized_pct = ((entry_price - best_price) / entry_price) * 100
+
+                    dynamic_tp = strategy.config.take_profit_percent
+                    tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
+
+                    if tp_progress >= 0.5:
+                        if position_side == "long":
+                            trail = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                            trailing_stop_price = max(trailing_stop_price, trail)
+                        else:
+                            trail = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                            trailing_stop_price = trail if trailing_stop_price == 0 else min(trailing_stop_price, trail)
+
+                    if trailing_stop_price > 0:
+                        if position_side == "long" and current.low <= trailing_stop_price:
+                            trailing_hit = True
+                        elif position_side == "short" and current.high >= trailing_stop_price:
+                            trailing_hit = True
+
+                position = Position(
+                    pair=pair,
+                    side=position_side,
+                    entry_price=entry_price,
+                    current_price=current.close,
+                    size=position_size_usd / entry_price,
+                    entry_time=entry_time
+                )
+
+                should_exit = trailing_hit
+                if not should_exit:
+                    signal = strategy.analyze(market_data, position)
+                    if position_side == "long":
+                        should_exit = signal.signal_type in (SignalType.SELL, SignalType.CLOSE_LONG)
+                    elif position_side == "short":
+                        should_exit = signal.signal_type == SignalType.CLOSE_SHORT
+
+                if trailing_hit:
+                    # Use trailing stop price as exit price
+                    exit_price = trailing_stop_price
+
+                if should_exit:
+                    if not trailing_hit:
+                        exit_price = current.close
+                    if position_side == "short":
+                        gross_pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+                    else:
+                        gross_pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+                    net_pnl_pct = gross_pnl_pct - (self.fee_percent * 2)
+                    pnl_usd = position_size_usd * (net_pnl_pct / 100)
+
+                    capital += pnl_usd
+                    peak_capital = max(peak_capital, capital)
+
+                    trades.append({
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "pnl_percent": net_pnl_pct,
+                        "pnl_usd": pnl_usd,
+                        "win": pnl_usd > 0,
+                        "side": position_side,
+                    })
+
+                    in_position = False
+            else:
+                signal = strategy.analyze(market_data, None)
+
+                if signal.signal_type == SignalType.BUY:
+                    entry_price = current.close
+                    entry_time = current.timestamp
+                    position_size_usd = capital * (self.position_size_percent / 100)
+                    position_side = "long"
+                    in_position = True
+                    best_price = entry_price
+                    trailing_stop_price = 0.0
+                    breakeven_triggered = False
+                elif signal.signal_type == SignalType.SELL_SHORT:
+                    entry_price = current.close
+                    entry_time = current.timestamp
+                    position_size_usd = capital * (self.position_size_percent / 100)
+                    position_side = "short"
+                    in_position = True
+                    best_price = entry_price
+                    trailing_stop_price = 0.0
+                    breakeven_triggered = False
+
+        # Calculate metrics
+        return self._calculate_metrics(trades, capital)
+
+    def _calculate_metrics(
+        self,
+        trades: List[dict],
+        final_capital: float,
+        recency_weight: float = 2.0
+    ) -> Dict[str, Any]:
+        """
+        Calculate performance metrics from trades with recency weighting.
+
+        Recent trades get higher weight in the score, since recent market
+        conditions are more likely to represent future conditions.
+
+        Args:
+            trades: List of trade dictionaries.
+            final_capital: Final capital after all trades.
+            recency_weight: Multiplier for recent data (2.0 = recent half counts 2x).
+        """
+        if not trades:
+            return {
+                "total_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": 0.0,
+                "total_return": 0.0,
+                "total_pnl_percent": 0.0,
+                "avg_pnl_percent": 0.0,
+                "profit_factor": 0.0,
+                "sharpe_ratio": 0.0,
+                "max_drawdown_percent": 0.0,
+                "score": float("-inf"),
+                "recent_win_rate": 0.0,
+                "recent_return": 0.0,
+                "long_trades": 0,
+                "short_trades": 0,
+            }
+
+        wins = sum(1 for t in trades if t["win"])
+        losses = len(trades) - wins
+        win_rate = wins / len(trades) if trades else 0
+
+        # Count long vs short trades
+        long_trades = sum(1 for t in trades if t.get("side", "long") == "long")
+        short_trades = sum(1 for t in trades if t.get("side", "long") == "short")
+
+        total_pnl_pct = sum(t["pnl_percent"] for t in trades)
+        avg_pnl_pct = total_pnl_pct / len(trades)
+        total_return = (final_capital - self.initial_capital) / self.initial_capital
+
+        # Profit factor
+        gross_profit = sum(t["pnl_usd"] for t in trades if t["pnl_usd"] > 0)
+        gross_loss = abs(sum(t["pnl_usd"] for t in trades if t["pnl_usd"] < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+
+        # Sharpe estimate (capped and scaled by sample size to avoid overfitting)
+        returns = [t["pnl_percent"] for t in trades]
+        if len(returns) > 1:
+            avg_ret = sum(returns) / len(returns)
+            variance = sum((r - avg_ret) ** 2 for r in returns) / (len(returns) - 1)
+            std_dev = variance ** 0.5
+            sharpe = avg_ret / std_dev if std_dev > 0.001 else 0
+        else:
+            sharpe = 0
+        sharpe = max(min(sharpe, 10.0), -10.0)  # Cap at +/- 10
+        # Scale Sharpe down for small sample sizes — 2 trades means Sharpe is meaningless
+        n_trades = len(trades)
+        if n_trades < 20:
+            sharpe *= n_trades / 20.0  # Linear decay below 20 trades
+
+        # Max drawdown
+        peak = self.initial_capital
+        max_dd = 0
+        running = self.initial_capital
+        for t in trades:
+            running += t["pnl_usd"]
+            peak = max(peak, running)
+            dd = (peak - running) / peak * 100
+            max_dd = max(max_dd, dd)
+
+        # === RECENCY WEIGHTING ===
+        # Split trades into halves: older vs recent
+        midpoint = len(trades) // 2
+        recent_trades = trades[midpoint:]
+        recent_wins = sum(1 for t in recent_trades if t["win"])
+        recent_win_rate = recent_wins / len(recent_trades) if recent_trades else 0
+        recent_pnl = sum(t["pnl_percent"] for t in recent_trades)
+        recent_return = recent_pnl / len(recent_trades) if recent_trades else 0
+
+        # Cap profit factor to prevent single-win results from dominating
+        profit_factor_capped = min(profit_factor, 5.0) if profit_factor != float("inf") else 5.0
+
+        # Composite score with strong trade count penalty
+        # Require 15+ trades for confidence; trials with <5 trades are nearly worthless
+        min_trades = 15
+        if len(trades) < min_trades:
+            trade_penalty = (min_trades - len(trades)) * 5.0
+        else:
+            trade_penalty = 0
+        # Extra harsh penalty for extremely low trade counts
+        if len(trades) < 5:
+            trade_penalty += 30.0
+
+        # Base score components
+        return_score = total_return * 100 * 0.3
+        sharpe_score = sharpe * 10 * 0.2
+        pf_score = profit_factor_capped * 5 * 0.15
+        dd_penalty = max_dd * 0.1
+
+        # Recency-weighted component: recent performance counts more
+        recent_score = (
+            recent_return * recency_weight * 0.2 +   # Recent avg return weighted
+            recent_win_rate * 100 * 0.15              # Recent win rate
+        )
+
+        score = (
+            return_score +
+            sharpe_score +
+            pf_score +
+            recent_score -
+            dd_penalty -
+            trade_penalty
+        )
+
+        return {
+            "total_trades": len(trades),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate * 100,  # As percentage
+            "total_return": total_return,
+            "total_pnl_percent": total_pnl_pct,
+            "avg_pnl_percent": avg_pnl_pct,
+            "profit_factor": min(profit_factor, 999.0),
+            "sharpe_ratio": sharpe,
+            "max_drawdown_percent": max_dd,
+            "score": score,
+            "recent_win_rate": recent_win_rate * 100,
+            "recent_return": recent_return,
+            "long_trades": long_trades,
+            "short_trades": short_trades,
+        }
+
+
+class ScalpingOptimizer:
+    """Optimizer for scalping strategy parameters."""
+
+    def __init__(self, config: ScalpingOptimizerConfig):
+        if not OPTUNA_AVAILABLE:
+            raise ImportError(
+                "optuna is required for optimization. "
+                "Install it with: pip install optuna"
+            )
+
+        self.config = config
+        self._historical_data: Dict[str, List[OHLC]] = {}
+        self.study: Optional[optuna.Study] = None
+        self._best_params: Optional[Dict[str, Any]] = None
+        self._best_score: Optional[float] = None
+        self._per_pair_results: Dict[str, Any] = {}
+
+        # Ensure directories exist
+        Path(config.storage_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(config.cache_dir).mkdir(parents=True, exist_ok=True)
+
+    def _fetch_pair_data(
+        self, pair: str, show_progress: bool = True
+    ) -> List[OHLC]:
+        """Fetch data for a pair with cascading sources.
+
+        Priority order:
+          1. Kraken CSV files (uploaded historical data - best quality)
+          2. CryptoCompare API (free, years of hourly data)
+          3. Kraken REST API (only ~720 candles)
+          4. CCXT/Binance fallback
+        """
+        def progress_cb(current: int, total: int) -> None:
+            if show_progress and total > 0:
+                pct = (current / total * 100)
+                print(f"\r    Progress: {current}/{total} ({pct:.0f}%)...", end="", flush=True)
+
+        # Source 1: Kraken CSV files (uploaded historical data)
+        print(f"    Checking Kraken CSV files...")
+        try:
+            csv_provider = KrakenCSVProvider()
+            candles = csv_provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None,
+            )
+            if candles and len(candles) > 100:
+                print(f"    Loaded {len(candles)} candles from Kraken CSV files")
+                return candles
+        except Exception as e:
+            print(f"    Kraken CSV not available: {e}")
+
+        # Source 2: CryptoCompare API (free, deep history)
+        print(f"    Fetching from CryptoCompare API...")
+        try:
+            cc_provider = CryptoCompareProvider()
+            candles = cc_provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None,
+            )
+            if show_progress:
+                print()
+            if candles and len(candles) > 100:
+                print(f"    Loaded {len(candles)} candles from CryptoCompare")
+                return candles
+        except Exception as e:
+            print(f"    CryptoCompare failed: {e}")
+
+        # Source 3: Kraken REST API (~720 candles max)
+        print(f"    Falling back to Kraken REST API...")
+        kraken_dm = HistoricalDataManager(
+            cache_dir=self.config.cache_dir,
+            use_cache=True,
+        )
+        candles = kraken_dm.get_ohlc_range(
+            pair=pair,
+            start=self.config.start_date,
+            end=self.config.end_date,
+            interval=self.config.interval,
+            progress_callback=progress_cb if show_progress else None,
+        )
+        if show_progress:
+            print()
+        if candles and len(candles) > 100:
+            print(f"    Loaded {len(candles)} candles from Kraken REST API")
+            return candles
+
+        # Source 4: CCXT/Binance fallback
+        print(f"    Trying Binance via CCXT...")
+        try:
+            provider = CCXTDataProvider(
+                cache_dir=self.config.cache_dir, use_cache=True
+            )
+            candles = provider.get_ohlc_range(
+                pair=pair,
+                start=self.config.start_date,
+                end=self.config.end_date,
+                interval=self.config.interval,
+                progress_callback=progress_cb if show_progress else None,
+            )
+            if show_progress:
+                print()
+            if candles and len(candles) > 100:
+                print(f"    Loaded {len(candles)} candles from Binance")
+                return candles
+        except Exception as e:
+            print(f"    Binance fallback also failed: {e}")
+
+        return candles or []
+
+    def prefetch_data(self, show_progress: bool = True) -> None:
+        """Pre-fetch historical data for all pairs."""
+        print(f"\nFetching historical data...")
+        print(f"  Period: {self.config.start_date.date()} to {self.config.end_date.date()}")
+        print(f"  Interval: {self.config.interval} minutes")
+
+        failed_pairs = []
+        for pair in self.config.pairs:
+            print(f"\n  Fetching {pair}...")
+
+            candles = self._fetch_pair_data(pair, show_progress)
+
+            if not candles or len(candles) < 100:
+                print(f"    WARNING: Insufficient data for {pair} ({len(candles) if candles else 0} candles), skipping")
+                failed_pairs.append(pair)
+                continue
+
+            self._historical_data[pair] = candles
+            print(f"    Loaded {len(candles)} candles for {pair}")
+
+        # Remove failed pairs from config
+        if failed_pairs:
+            self.config.pairs = [p for p in self.config.pairs if p not in failed_pairs]
+            print(f"\n  Skipped {len(failed_pairs)} pairs with insufficient data: {', '.join(failed_pairs)}")
+
+        if not self.config.pairs:
+            raise ValueError("No pairs with sufficient data to optimize")
+
+    def _sample_params(self, trial: optuna.Trial) -> Dict[str, Any]:
+        """Sample parameters from the trial."""
+        params = {}
+
+        for name, ranges in SCALPING_PARAMETER_RANGES.items():
+            param_type = ranges.get("type", "float")
+
+            if param_type == "int":
+                params[name] = trial.suggest_int(
+                    name,
+                    int(ranges["low"]),
+                    int(ranges["high"]),
+                    step=int(ranges.get("step", 1))
+                )
+            else:
+                params[name] = trial.suggest_float(
+                    name,
+                    ranges["low"],
+                    ranges["high"],
+                    step=ranges.get("step")
+                )
+
+        return params
+
+    def _objective_single_pair(self, trial: optuna.Trial, pair: str) -> float:
+        """Objective function with out-of-sample validation.
+
+        Train on first 70% of data, validate on last 30%.
+        Final score = 0.4 * train_score + 0.6 * validation_score.
+        This prevents overfitting to the training period.
+        """
+        params = self._sample_params(trial)
+
+        candles = self._historical_data.get(pair)
+        if not candles:
+            return float("-inf")
+
+        # Split data: 70% train, 30% validation
+        split_idx = int(len(candles) * 0.7)
+        train_candles = candles[:split_idx]
+        val_candles = candles[split_idx:]
+
+        runner = ScalpingBacktestRunner(
+            initial_capital=self.config.initial_capital,
+            position_size_percent=self.config.position_size_percent,
+            fee_percent=self.config.fee_percent
+        )
+
+        # Use BTC/USD as regime reference (matches live trader)
+        btc_candles = self._historical_data.get("BTC/USD")
+        btc_train = btc_candles[:split_idx] if btc_candles else None
+        btc_val = btc_candles[split_idx:] if btc_candles else None
+
+        # Run on training data
+        train_metrics = runner.run(train_candles, pair, params, regime_candles=btc_train)
+
+        # Run on validation data (out-of-sample)
+        val_metrics = runner.run(val_candles, pair, params, regime_candles=btc_val)
+
+        # Combined score: validation weighted more heavily
+        train_score = train_metrics["score"]
+        val_score = val_metrics["score"]
+        combined_score = 0.4 * train_score + 0.6 * val_score
+
+        # Store metrics as user attributes (show validation metrics)
+        total_trades = train_metrics["total_trades"] + val_metrics["total_trades"]
+        trial.set_user_attr("total_trades", total_trades)
+        trial.set_user_attr("train_trades", train_metrics["total_trades"])
+        trial.set_user_attr("val_trades", val_metrics["total_trades"])
+        trial.set_user_attr("win_rate", val_metrics["win_rate"])
+        trial.set_user_attr("total_return", val_metrics["total_return"])
+        trial.set_user_attr("sharpe_ratio", val_metrics["sharpe_ratio"])
+        trial.set_user_attr("max_drawdown", val_metrics["max_drawdown_percent"])
+        trial.set_user_attr("profit_factor", val_metrics["profit_factor"])
+        trial.set_user_attr("recent_win_rate", val_metrics.get("recent_win_rate", 0))
+        trial.set_user_attr("recent_return", val_metrics.get("recent_return", 0))
+        trial.set_user_attr("long_trades", val_metrics.get("long_trades", 0))
+        trial.set_user_attr("short_trades", val_metrics.get("short_trades", 0))
+        trial.set_user_attr("train_score", train_score)
+        trial.set_user_attr("val_score", val_score)
+
+        return combined_score
+
+    def optimize_per_pair(
+        self,
+        n_trials: Optional[int] = None,
+        show_progress: bool = True
+    ) -> Dict[str, Tuple[Dict[str, Any], float]]:
+        """
+        Run separate optimization for each pair.
+
+        Returns:
+            Dictionary mapping pair -> (best_params, best_score)
+        """
+        n_trials = n_trials or self.config.n_trials
+
+        # Pre-fetch data
+        if not self._historical_data:
+            self.prefetch_data(show_progress)
+
+        results: Dict[str, Tuple[Dict[str, Any], float]] = {}
+
+        for pair in self.config.pairs:
+            pair_clean = pair.replace("/", "_")
+            study_name = f"{self.config.study_name}_{pair_clean}"
+            storage_path = self.config.storage_path.replace(".db", f"_{pair_clean}.db")
+            storage_url = f"sqlite:///{storage_path}"
+
+            print(f"\n{'=' * 60}")
+            print(f"OPTIMIZING: {pair}")
+            print(f"{'=' * 60}")
+
+            study = optuna.create_study(
+                study_name=study_name,
+                storage=storage_url,
+                direction="maximize",
+                load_if_exists=True,
+            )
+
+            print(f"  Study: {study_name}")
+            print(f"  Existing trials: {len(study.trials)}")
+
+            def objective(trial, p=pair):
+                return self._objective_single_pair(trial, p)
+
+            study.optimize(
+                objective,
+                n_trials=n_trials,
+                timeout=self.config.timeout_seconds,
+                show_progress_bar=show_progress,
+            )
+
+            best_params = study.best_params
+            best_score = study.best_value
+            results[pair] = (best_params, best_score)
+
+            self._per_pair_results[pair] = {
+                "params": best_params,
+                "score": best_score,
+                "study": study,
+                "trials": len(study.trials),
+                "best_trial": study.best_trial,
+            }
+
+            # Print results
+            print(f"\n--- {pair} Best Parameters ---")
+            for name, value in sorted(best_params.items()):
+                if isinstance(value, float):
+                    print(f"    {name}: {value:.2f}")
+                else:
+                    print(f"    {name}: {value}")
+            print(f"    Score: {best_score:.2f}")
+
+            # Print metrics
+            best_trial = study.best_trial
+            print(f"\n--- {pair} Best Metrics ---")
+            print(f"    Return: {best_trial.user_attrs.get('total_return', 0)*100:.2f}%")
+            print(f"    Trades: {best_trial.user_attrs.get('total_trades', 0)}")
+            print(f"    Win Rate: {best_trial.user_attrs.get('win_rate', 0):.1f}%")
+            print(f"    Profit Factor: {best_trial.user_attrs.get('profit_factor', 0):.2f}")
+            print(f"    Max Drawdown: {best_trial.user_attrs.get('max_drawdown', 0):.1f}%")
+
+        return results
+
+    def print_summary(self) -> None:
+        """Print optimization results summary."""
+        if not self._per_pair_results:
+            print("No results available.")
+            return
+
+        print(f"\n{'=' * 90}")
+        print("SCALPING OPTIMIZATION SUMMARY (v2 — with Stochastic, MACD, OBV, ATR, shorts)")
+        print(f"{'=' * 90}")
+
+        print(f"\n{'Pair':<12} {'Score':>8} {'Return':>8} {'Trades':>7} {'L/S':>7} {'WR':>7} {'RecentWR':>9} {'PF':>7}")
+        print("-" * 75)
+
+        for pair, result in self._per_pair_results.items():
+            score = result["score"]
+            bt = result["best_trial"]
+            ret = bt.user_attrs.get("total_return", 0) * 100
+            trades = bt.user_attrs.get("total_trades", 0)
+            wr = bt.user_attrs.get("win_rate", 0)
+            pf = bt.user_attrs.get("profit_factor", 0)
+            recent_wr = bt.user_attrs.get("recent_win_rate", 0)
+            longs = bt.user_attrs.get("long_trades", trades)
+            shorts = bt.user_attrs.get("short_trades", 0)
+
+            ls_str = f"{longs}/{shorts}"
+            print(f"{pair:<12} {score:>8.1f} {ret:>7.2f}% {trades:>7} {ls_str:>7} {wr:>6.1f}% {recent_wr:>8.1f}% {pf:>7.2f}")
+
+        print("-" * 75)
+
+        # Best parameters per pair
+        print(f"\n{'=' * 90}")
+        print("BEST PARAMETERS BY PAIR")
+        print(f"{'=' * 90}")
+
+        for pair, result in self._per_pair_results.items():
+            params = result["params"]
+            print(f"\n{pair}:")
+            print(f"  Take Profit: {params.get('take_profit_percent', 0):.1f}%")
+            print(f"  Stop Loss: {params.get('stop_loss_percent', 0):.1f}%")
+            print(f"  RSI: period={params.get('rsi_period', 7)}, oversold={params.get('rsi_oversold', 30)}, overbought={params.get('rsi_overbought', 70)}")
+            print(f"  BB: period={params.get('bb_period', 20)}, std_dev={params.get('bb_std_dev', 2.0):.2f}")
+            print(f"  VWAP threshold: {params.get('vwap_threshold_percent', 0.3):.2f}%")
+            print(f"  Volume spike: {params.get('volume_spike_threshold', 1.5):.2f}x")
+            print(f"  Min confirmations: {params.get('min_confirmations', 2)}")
+            print(f"  Stochastic: period={params.get('stoch_k_period', 14)}, OS={params.get('stoch_oversold', 20)}, OB={params.get('stoch_overbought', 80)}")
+            print(f"  ATR: period={params.get('atr_period', 14)}, SL mult={params.get('atr_stop_multiplier', 1.5):.2f}, TP mult={params.get('atr_tp_multiplier', 2.0):.2f}")
+            print(f"  Short min confirmations: {params.get('short_min_confirmations', 3)}")
+
+    def export_config(self, output_path: str = "config/scalping.optimized.yaml") -> str:
+        """Export optimized parameters to YAML."""
+        import yaml
+
+        if not self._per_pair_results:
+            raise ValueError("No results to export.")
+
+        config = {
+            "_optimization": {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "study_name": self.config.study_name,
+                "period_days": (self.config.end_date - self.config.start_date).days,
+            },
+            "pair_parameters": {}
+        }
+
+        for pair, result in self._per_pair_results.items():
+            params = result["params"]
+            bt = result["best_trial"]
+            config["pair_parameters"][pair] = {
+                "take_profit_percent": params.get("take_profit_percent", 4.5),
+                "stop_loss_percent": params.get("stop_loss_percent", 2.0),
+                "rsi_period": params.get("rsi_period", 7),
+                "rsi_oversold": params.get("rsi_oversold", 30),
+                "rsi_overbought": params.get("rsi_overbought", 70),
+                "bb_period": params.get("bb_period", 20),
+                "bb_std_dev": params.get("bb_std_dev", 2.0),
+                "vwap_threshold_percent": params.get("vwap_threshold_percent", 0.3),
+                "volume_spike_threshold": params.get("volume_spike_threshold", 1.5),
+                "min_confirmations": params.get("min_confirmations", 2),
+                # New indicator params
+                "stoch_k_period": params.get("stoch_k_period", 14),
+                "stoch_oversold": params.get("stoch_oversold", 20),
+                "stoch_overbought": params.get("stoch_overbought", 80),
+                "atr_period": params.get("atr_period", 14),
+                "atr_stop_multiplier": params.get("atr_stop_multiplier", 1.5),
+                "atr_tp_multiplier": params.get("atr_tp_multiplier", 2.0),
+                "short_min_confirmations": params.get("short_min_confirmations", 3),
+                "_metrics": {
+                    "score": result["score"],
+                    "return": bt.user_attrs.get("total_return", 0),
+                    "win_rate": bt.user_attrs.get("win_rate", 0),
+                    "trades": bt.user_attrs.get("total_trades", 0),
+                    "recent_win_rate": bt.user_attrs.get("recent_win_rate", 0),
+                    "long_trades": bt.user_attrs.get("long_trades", 0),
+                    "short_trades": bt.user_attrs.get("short_trades", 0),
+                }
+            }
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+        print(f"\nExported optimized config to {output_path}")
+        return output_path
+
+
+class RegimeAwareOptimizer:
+    """
+    Optimizes scalping parameters per market regime.
+
+    Segments historical data into bull/bear/sideways windows using the
+    RegimeDetector, then runs separate Optuna studies for each regime.
+    The output is a config with per-regime parameter sets that the live
+    trader can switch between automatically.
+    """
+
+    def __init__(self, config: ScalpingOptimizerConfig):
+        if not OPTUNA_AVAILABLE:
+            raise ImportError("optuna is required. Install: pip install optuna")
+
+        self.config = config
+        self._historical_data: Dict[str, List[OHLC]] = {}
+        self._regime_detector = RegimeDetector(RegimeConfig(
+            fast_sma_period=50,
+            slow_sma_period=200,
+            min_data_points=200,
+        ))
+        self._results: Dict[str, Dict[str, Any]] = {}  # pair -> regime -> results
+
+        # Re-use the same data fetch logic as ScalpingOptimizer
+        self._data_fetcher = ScalpingOptimizer(config)
+
+    def prefetch_data(self, show_progress: bool = True) -> None:
+        """Pre-fetch historical data for all pairs."""
+        self._data_fetcher.prefetch_data(show_progress)
+        self._historical_data = self._data_fetcher._historical_data
+
+    def segment_by_regime(self, pair: str) -> Dict[MarketRegime, List[List[OHLC]]]:
+        """
+        Segment candle data into windows by detected regime.
+
+        Returns a dict mapping regime -> list of contiguous candle windows
+        belonging to that regime. Each window is at least 200 candles.
+        """
+        candles = self._historical_data[pair]
+        if len(candles) < 250:
+            return {MarketRegime.UNKNOWN: [candles]}
+
+        # Classify each candle (using rolling window)
+        min_pts = 200
+        regime_labels = []
+        for i in range(len(candles)):
+            if i < min_pts:
+                regime_labels.append(MarketRegime.UNKNOWN)
+                continue
+            window = candles[max(0, i - min_pts):i + 1]
+            closes = [c.close for c in window]
+            highs = [c.high for c in window]
+            lows = [c.low for c in window]
+            result = self._regime_detector.detect(closes, highs, lows)
+            regime_labels.append(result.regime)
+
+        # Group contiguous runs of the same regime into windows
+        segments: Dict[MarketRegime, List[List[OHLC]]] = {
+            MarketRegime.BULL: [],
+            MarketRegime.BEAR: [],
+            MarketRegime.SIDEWAYS: [],
+        }
+
+        current_regime = regime_labels[min_pts] if len(regime_labels) > min_pts else MarketRegime.UNKNOWN
+        window_start = min_pts
+
+        for i in range(min_pts + 1, len(candles)):
+            is_last = (i == len(candles) - 1)
+            regime_changed = (regime_labels[i] != current_regime)
+
+            if regime_changed or is_last:
+                # Include last candle in final segment
+                end_idx = i + 1 if is_last and not regime_changed else i
+                window = candles[window_start:end_idx]
+                if len(window) >= 50 and current_regime in segments:  # Min 50 candles
+                    segments[current_regime].append(window)
+                current_regime = regime_labels[i]
+                window_start = i
+
+        # Print segment summary
+        for regime, windows in segments.items():
+            total = sum(len(w) for w in windows)
+            print(f"    {regime.value}: {len(windows)} windows, {total} total candles")
+
+        return segments
+
+    def optimize_per_regime(
+        self,
+        n_trials: Optional[int] = None,
+        show_progress: bool = True,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Run per-pair, per-regime optimization.
+
+        Returns nested dict: pair -> regime -> {params, score, metrics}
+        """
+        n_trials = n_trials or self.config.n_trials
+
+        if not self._historical_data:
+            self.prefetch_data(show_progress)
+
+        all_results: Dict[str, Dict[str, Any]] = {}
+
+        for pair in self.config.pairs:
+            print(f"\n{'=' * 60}")
+            print(f"REGIME-AWARE OPTIMIZATION: {pair}")
+            print(f"{'=' * 60}")
+
+            segments = self.segment_by_regime(pair)
+            pair_results: Dict[str, Any] = {}
+
+            for regime, windows in segments.items():
+                if not windows:
+                    print(f"\n  {regime.value}: No data -- skipping")
+                    continue
+
+                # Concatenate all windows for this regime
+                all_candles = []
+                for w in windows:
+                    all_candles.extend(w)
+
+                if len(all_candles) < 100:
+                    print(f"\n  {regime.value}: Only {len(all_candles)} candles -- skipping")
+                    continue
+
+                print(f"\n  --- Optimizing for {regime.value} regime ({len(all_candles)} candles) ---")
+
+                pair_clean = pair.replace("/", "_")
+                study_name = f"regime_{pair_clean}_{regime.value}"
+                storage_path = self.config.storage_path.replace(
+                    ".db", f"_regime_{pair_clean}_{regime.value}.db"
+                )
+                storage_url = f"sqlite:///{storage_path}"
+                Path(storage_path).parent.mkdir(parents=True, exist_ok=True)
+
+                study = optuna.create_study(
+                    study_name=study_name,
+                    storage=storage_url,
+                    direction="maximize",
+                    load_if_exists=True,
+                )
+
+                runner = ScalpingBacktestRunner(
+                    initial_capital=self.config.initial_capital,
+                    position_size_percent=self.config.position_size_percent,
+                    fee_percent=self.config.fee_percent,
+                )
+
+                def objective(trial, c=all_candles, p=pair):
+                    params = {}
+                    for name, ranges in SCALPING_PARAMETER_RANGES.items():
+                        param_type = ranges.get("type", "float")
+                        if param_type == "int":
+                            params[name] = trial.suggest_int(
+                                name, int(ranges["low"]), int(ranges["high"]),
+                                step=int(ranges.get("step", 1))
+                            )
+                        else:
+                            params[name] = trial.suggest_float(
+                                name, ranges["low"], ranges["high"],
+                                step=ranges.get("step")
+                            )
+                    metrics = runner.run(c, p, params)
+                    trial.set_user_attr("total_trades", metrics["total_trades"])
+                    trial.set_user_attr("win_rate", metrics["win_rate"])
+                    trial.set_user_attr("total_return", metrics["total_return"])
+                    trial.set_user_attr("sharpe_ratio", metrics["sharpe_ratio"])
+                    trial.set_user_attr("profit_factor", metrics["profit_factor"])
+                    trial.set_user_attr("max_drawdown", metrics["max_drawdown_percent"])
+                    return metrics["score"]
+
+                study.optimize(
+                    objective,
+                    n_trials=n_trials,
+                    timeout=self.config.timeout_seconds,
+                    show_progress_bar=show_progress,
+                )
+
+                best = study.best_trial
+                pair_results[regime.value] = {
+                    "params": study.best_params,
+                    "score": study.best_value,
+                    "return": best.user_attrs.get("total_return", 0),
+                    "win_rate": best.user_attrs.get("win_rate", 0),
+                    "trades": best.user_attrs.get("total_trades", 0),
+                    "profit_factor": best.user_attrs.get("profit_factor", 0),
+                    "max_drawdown": best.user_attrs.get("max_drawdown", 0),
+                }
+
+                print(f"    Best score: {study.best_value:.2f}")
+                print(f"    Return: {best.user_attrs.get('total_return', 0)*100:.2f}%")
+                print(f"    Win rate: {best.user_attrs.get('win_rate', 0):.1f}%")
+
+            all_results[pair] = pair_results
+
+        self._results = all_results
+        return all_results
+
+    def print_summary(self) -> None:
+        """Print regime-aware optimization summary."""
+        print(f"\n{'=' * 70}")
+        print("REGIME-AWARE OPTIMIZATION SUMMARY")
+        print(f"{'=' * 70}")
+
+        for pair, regimes in self._results.items():
+            print(f"\n  {pair}:")
+            print(f"  {'Regime':<12} {'Score':>8} {'Return':>10} {'Trades':>8} {'WinRate':>10} {'PF':>8}")
+            print(f"  {'-'*58}")
+
+            for regime, result in regimes.items():
+                ret = result.get("return", 0) * 100
+                trades = result.get("trades", 0)
+                wr = result.get("win_rate", 0)
+                pf = result.get("profit_factor", 0)
+                score = result.get("score", 0)
+                print(f"  {regime:<12} {score:>8.1f} {ret:>9.2f}% {trades:>8} {wr:>9.1f}% {pf:>8.2f}")
+
+    def export_config(self, output_path: str = "config/scalping.regime.yaml") -> str:
+        """Export regime-aware config to YAML."""
+        import yaml
+
+        config = {
+            "_optimization": {
+                "type": "regime_aware",
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "period_days": (self.config.end_date - self.config.start_date).days,
+                "regimes": ["bull", "bear", "sideways"],
+            },
+            "regime_parameters": {},
+        }
+
+        for pair, regimes in self._results.items():
+            config["regime_parameters"][pair] = {}
+            for regime, result in regimes.items():
+                params = result.get("params", {})
+                config["regime_parameters"][pair][regime] = {
+                    **params,
+                    "_metrics": {
+                        "score": result.get("score", 0),
+                        "return": result.get("return", 0),
+                        "win_rate": result.get("win_rate", 0),
+                        "trades": result.get("trades", 0),
+                    }
+                }
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+        print(f"\nExported regime-aware config to {output_path}")
+        return output_path
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Optimize scalping strategy parameters",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "--pairs", nargs="+",
+        default=["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "LINK/USD",
+                 "AVAX/USD", "DOT/USD", "POL/USD", "ATOM/USD", "NEAR/USD"],
+        help="Trading pairs to optimize"
+    )
+    parser.add_argument(
+        "--trials", "-n", type=int, default=100,
+        help="Number of trials per pair"
+    )
+    parser.add_argument(
+        "--start", type=str, default=None,
+        help="Start date (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--end", type=str, default=None,
+        help="End date (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--interval", type=int, default=240,
+        choices=[1, 5, 15, 30, 60, 240, 720, 1440],
+        help="Candle interval in minutes (default: 240=4h)"
+    )
+    parser.add_argument(
+        "--days", type=int, default=365,
+        help="Days of historical data (default: 365). With Kraken CSV files or "
+             "CryptoCompare API, full year+ of data is available"
+    )
+    parser.add_argument(
+        "--per-pair", action="store_true",
+        help="Optimize each pair separately (recommended)"
+    )
+    parser.add_argument(
+        "--regime-aware", action="store_true",
+        help="Segment data by bull/bear/sideways and optimize per regime"
+    )
+    parser.add_argument(
+        "--export", action="store_true",
+        help="Export optimized config"
+    )
+    parser.add_argument(
+        "--export-path", type=str, default="config/scalping.optimized.yaml",
+        help="Path for exported config"
+    )
+    parser.add_argument(
+        "--no-progress", action="store_true",
+        help="Disable progress bar"
+    )
+
+    return parser.parse_args()
+
+
+def parse_date(date_str: str) -> datetime:
+    """Parse date string."""
+    return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
+def main():
+    """Main entry point."""
+    args = parse_args()
+
+    configure_logging(level="WARNING", format_type="json")
+
+    print("=" * 60)
+    print("SCALPING STRATEGY OPTIMIZER")
+    print("=" * 60)
+
+    # Parse dates
+    end_date = parse_date(args.end) if args.end else datetime.now(timezone.utc)
+    start_date = parse_date(args.start) if args.start else end_date - timedelta(days=args.days)
+
+    mode = "REGIME-AWARE" if args.regime_aware else "PER-PAIR"
+    print(f"\nConfiguration:")
+    print(f"  Mode: {mode}")
+    print(f"  Pairs: {', '.join(args.pairs)}")
+    print(f"  Trials: {args.trials} per pair/regime")
+    print(f"  Period: {start_date.date()} to {end_date.date()} ({args.days} days)")
+    print(f"  Interval: {args.interval} minutes")
+
+    config = ScalpingOptimizerConfig(
+        n_trials=args.trials,
+        pairs=args.pairs,
+        start_date=start_date,
+        end_date=end_date,
+        interval=args.interval,
+    )
+
+    try:
+        if args.regime_aware:
+            # Regime-aware optimization: segments data by bull/bear/sideways
+            optimizer = RegimeAwareOptimizer(config)
+            results = optimizer.optimize_per_regime(
+                show_progress=not args.no_progress
+            )
+            optimizer.print_summary()
+            if args.export:
+                export_path = args.export_path.replace(
+                    ".yaml", ".regime.yaml"
+                ) if "regime" not in args.export_path else args.export_path
+                optimizer.export_config(export_path)
+        else:
+            # Standard per-pair optimization
+            optimizer = ScalpingOptimizer(config)
+            results = optimizer.optimize_per_pair(
+                show_progress=not args.no_progress
+            )
+            optimizer.print_summary()
+            if args.export:
+                optimizer.export_config(args.export_path)
+
+    except ImportError as e:
+        print(f"\nError: {e}")
+        print("Install: pip install optuna ccxt")
+        sys.exit(1)
+
+    except KeyboardInterrupt:
+        print("\n\nOptimization interrupted.")
+        if hasattr(optimizer, '_per_pair_results') and optimizer._per_pair_results:
+            optimizer.print_summary()
+        elif hasattr(optimizer, '_results') and optimizer._results:
+            optimizer.print_summary()
+        sys.exit(1)
+
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+    print("\nOptimization complete!")
+
+
+if __name__ == "__main__":
+    main()

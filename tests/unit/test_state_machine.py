@@ -56,9 +56,8 @@ class TestTradingStateMachine:
             side="long",
             entry_price=50000.0,
             size=0.01,
-            order_id="ORDER123",
-            stop_loss=47500.0,
-            take_profit=55000.0
+            size_usd=500.0,
+            order_id="ORDER123"
         )
         assert sm.state == TradingState.IN_POSITION
         assert sm.has_position
@@ -74,17 +73,16 @@ class TestTradingStateMachine:
             side="long",
             entry_price=50000.0,
             size=0.01,
-            order_id="ORDER123",
-            stop_loss=47500.0,
-            take_profit=55000.0
+            size_usd=500.0,
+            order_id="ORDER123"
         )
 
         # Start exit
-        assert sm.start_exit("Take profit hit")
+        assert sm.start_exit("BTC/USD", "Take profit hit")
         assert sm.state == TradingState.EXITING
 
         # Close position
-        closed = sm.close_position(exit_price=55000.0, pnl=50.0)
+        closed = sm.close_position(pair="BTC/USD", exit_price=55000.0, pnl=50.0)
         assert sm.state == TradingState.IDLE
         assert not sm.has_position
         assert closed.pair == "BTC/USD"
@@ -94,8 +92,8 @@ class TestTradingStateMachine:
         sm = TradingStateMachine()
         sm.initialize_complete()
 
-        # Can't go directly from IDLE to IN_POSITION
-        assert not sm.transition_to(TradingState.IN_POSITION)
+        # Can't go directly from IDLE to EXITING
+        assert not sm.transition_to(TradingState.EXITING)
         assert sm.state == TradingState.IDLE
 
     def test_error_handling(self):
@@ -141,9 +139,8 @@ class TestTradingStateMachine:
             side="long",
             entry_price=3000.0,
             size=0.5,
-            order_id="ORDER456",
-            stop_loss=2850.0,
-            take_profit=3300.0
+            size_usd=1500.0,
+            order_id="ORDER456"
         )
 
         pos = sm.position
@@ -151,8 +148,7 @@ class TestTradingStateMachine:
         assert pos.side == "long"
         assert pos.entry_price == 3000.0
         assert pos.size == 0.5
-        assert pos.stop_loss == 2850.0
-        assert pos.take_profit == 3300.0
+        assert pos.total_cost_usd == 1500.0
 
     def test_pending_order(self):
         """Should track pending orders."""
@@ -194,9 +190,8 @@ class TestTradingStateMachine:
             side="long",
             entry_price=50000.0,
             size=0.01,
-            order_id="ORDER123",
-            stop_loss=47500.0,
-            take_profit=55000.0
+            size_usd=500.0,
+            order_id="ORDER123"
         )
 
         data = sm.to_dict()
@@ -214,7 +209,7 @@ class TestTradingStateMachine:
         sm = TradingStateMachine()
         sm.initialize_complete()
 
-        assert not sm.start_exit("No position")
+        assert not sm.start_exit("BTC/USD", "No position")
         assert sm.state == TradingState.IDLE
 
 
@@ -255,9 +250,8 @@ class TestStateMachineEdgeCases:
             side="long",
             entry_price=50000.0,
             size=0.01,
-            order_id="ORDER123",
-            stop_loss=47500.0,
-            take_profit=55000.0
+            size_usd=500.0,
+            order_id="ORDER123"
         )
         assert sm.stop()
 
@@ -289,9 +283,8 @@ class TestStateMachineEdgeCases:
                     side="long",
                     entry_price=50000.0,
                     size=0.01,
-                    order_id="ORDER123",
-                    stop_loss=47500.0,
-                    take_profit=55000.0
+                    size_usd=500.0,
+                    order_id="ORDER123"
                 )
             elif target_state == TradingState.EXITING:
                 sm.start_analysis()
@@ -301,10 +294,9 @@ class TestStateMachineEdgeCases:
                     side="long",
                     entry_price=50000.0,
                     size=0.01,
-                    order_id="ORDER123",
-                    stop_loss=47500.0,
-                    take_profit=55000.0
+                    size_usd=500.0,
+                    order_id="ORDER123"
                 )
-                sm.start_exit()
+                sm.start_exit("BTC/USD")
 
             assert sm.set_error("Test error"), f"Failed from {target_state}"

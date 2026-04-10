@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scalping Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta http-equiv="refresh" content="60">
+    <style>
+        .expandable { cursor: pointer; transition: background-color 0.15s; }
+        .expandable:hover { background-color: rgba(255,255,255,0.05); }
+        .expand-content { display: none; }
+        .expand-content.open { display: block; }
+        .expand-arrow { transition: transform 0.2s; display: inline-block; }
+        .expand-arrow.open { transform: rotate(90deg); }
+        .section-toggle { cursor: pointer; user-select: none; }
+        .section-toggle:hover { background-color: rgba(255,255,255,0.03); }
+        .section-body { transition: max-height 0.3s ease; overflow: hidden; }
+        .section-body.collapsed { max-height: 0 !important; padding: 0 !important; }
+        .indicator-bar { height: 6px; border-radius: 3px; position: relative; }
+        .indicator-marker { position: absolute; top: -3px; width: 3px; height: 12px; border-radius: 1px; }
+        .trade-open { border-left: 3px solid #22c55e; background-color: rgba(34, 197, 94, 0.05); }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <div class="container mx-auto px-4 py-8 max-w-6xl">
+        <!-- Header -->
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-3xl font-bold">Scalping Dashboard</h1>
+                <p class="text-gray-400">Mean-reversion strategy with adaptive pair management</p>
+            </div>
+            <div class="flex items-center gap-4">
+                <!-- Regime Badge -->
+                <span class="px-3 py-1 rounded-full text-sm
+                    {% if regime == 'bull' %}bg-green-900 text-green-300
+                    {% elif regime == 'bear' %}bg-red-900 text-red-300
+                    {% else %}bg-gray-700 text-gray-300{% endif %}">
+                    {{ regime|upper }}
+                </span>
+                <!-- Circuit Breaker -->
+                {% if circuit_breaker_state != 'closed' %}
+                <span class="px-3 py-1 rounded-full text-sm bg-red-900 text-red-300 animate-pulse">
+                    CB: {{ circuit_breaker_state|upper }}
+                </span>
+                {% endif %}
+                <!-- Paper/Live -->
+                <span class="px-3 py-1 rounded-full text-sm
+                    {% if paper_trading %}bg-yellow-900 text-yellow-300{% else %}bg-red-900 text-red-300{% endif %}">
+                    {% if paper_trading %}PAPER{% else %}LIVE{% endif %}
+                </span>
+                <div class="text-right">
+                    <div class="text-gray-400 text-sm">
+                        Updated: {{ last_update[:19] if last_update else 'Never' }}
+                    </div>
+                    <div class="text-gray-500 text-xs" id="uptime">
+                        Uptime: calculating...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Key Metrics -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-8">
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Capital</div>
+                <div class="text-2xl font-bold">${{ "%.2f"|format(capital) }}</div>
+                <div class="text-xs mt-1 text-gray-500">
+                    <span class="text-yellow-400">${{ "%.0f"|format(deployed_capital) }}</span> deployed
+                    · <span class="text-green-400">${{ "%.0f"|format(cash_capital) }}</span> cash
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Total P&L</div>
+                <div class="text-2xl font-bold {% if metrics.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                    ${{ "%.2f"|format(metrics.total_pnl) }}
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Win Rate</div>
+                <div class="text-2xl font-bold {% if metrics.win_rate >= 50 %}text-green-400{% elif metrics.win_rate >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                    {{ "%.1f"|format(metrics.win_rate) }}%
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Total Trades</div>
+                <div class="text-2xl font-bold">{{ metrics.total_trades }}</div>
+                <div class="text-xs text-gray-500">{{ metrics.wins }}W / {{ metrics.losses }}L</div>
+            </div>
+            <div class="bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div class="text-gray-400 text-sm">Drawdown</div>
+                <div class="text-2xl font-bold {% if current_drawdown_pct >= 3 %}text-red-400{% elif current_drawdown_pct >= 1 %}text-yellow-400{% else %}text-green-400{% endif %}">
+                    {{ "%.2f"|format(current_drawdown_pct) }}%
+                </div>
+            </div>
+        </div>
+
+        <!-- Pair Status with Indicators -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+            <!-- Enabled Pairs -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+                    <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <h2 class="text-lg font-medium">Enabled Pairs ({{ enabled_pairs|length }})</h2>
+                </div>
+                <div class="p-4">
+                    {% if enabled_pairs %}
+                    <div class="space-y-2">
+                        {% for pair in enabled_pairs %}
+                        {% set p = pairs.get(pair, {}) %}
+                        {% set ind = indicator_snapshots.get(pair, {}) %}
+                        {% set wr = (p.wins / p.total_trades * 100) if p.total_trades > 0 else 0 %}
+                        <div class="bg-gray-700 rounded overflow-hidden">
+                            <div class="expandable flex items-center justify-between p-2" onclick="toggleExpand(this)">
+                                <div class="flex items-center gap-2">
+                                    <span class="expand-arrow text-gray-500 text-xs">&#9654;</span>
+                                    <span class="font-medium">{{ pair }}</span>
+                                    {% if pair in open_pairs %}
+                                    <span class="w-2 h-2 bg-green-400 rounded-full" title="Position open"></span>
+                                    {% endif %}
+                                </div>
+                                <div class="flex items-center gap-4 text-sm">
+                                    {% if ind.price %}
+                                    <span class="text-gray-300">${{ "%.2f"|format(ind.price) }}</span>
+                                    {% endif %}
+                                    <span class="text-gray-400">{{ p.total_trades or 0 }} trades</span>
+                                    <span class="{% if (p.total_pnl or 0) >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                        ${{ "%.2f"|format(p.total_pnl or 0) }}
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="expand-content px-4 pb-3">
+                                <div class="pt-2 border-t border-gray-600 space-y-3">
+                                    <!-- Performance row -->
+                                    <div class="grid grid-cols-3 gap-3 text-sm">
+                                        <div>
+                                            <div class="text-gray-500 text-xs">Win Rate</div>
+                                            <div class="{% if wr >= 50 %}text-green-400{% elif wr >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                                                {{ "%.1f"|format(wr) }}%
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-500 text-xs">W / L</div>
+                                            <div>{{ p.wins or 0 }} / {{ p.losses or 0 }}</div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-500 text-xs">Consec. Losses</div>
+                                            <div class="{% if (p.consecutive_losses or 0) >= 3 %}text-red-400{% endif %}">
+                                                {{ p.consecutive_losses or 0 }}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {% if ind %}
+                                    <!-- Indicators -->
+                                    <div class="text-xs text-gray-500 uppercase tracking-wider mt-2">Indicators</div>
+                                    <div class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                                        {% if ind.rsi is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">RSI ({{ ind.rsi_oversold|int }}/{{ ind.rsi_overbought|int }})</span>
+                                            <span class="{% if ind.rsi < ind.rsi_oversold %}text-green-400{% elif ind.rsi > ind.rsi_overbought %}text-red-400{% else %}text-gray-300{% endif %}">
+                                                {{ ind.rsi }}
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.stoch_k is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Stoch %K</span>
+                                            <span class="{% if ind.stoch_k < ind.stoch_oversold %}text-green-400{% elif ind.stoch_k > ind.stoch_overbought %}text-red-400{% else %}text-gray-300{% endif %}">
+                                                {{ ind.stoch_k }}
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.macd_histogram is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">MACD Hist</span>
+                                            <span class="{% if ind.macd_histogram > 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                                {{ ind.macd_histogram }}
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.vwap_pct is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">vs VWAP</span>
+                                            <span class="{% if ind.vwap_pct < 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                                {{ ind.vwap_pct }}%
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.ema_trend is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">EMA Trend</span>
+                                            <span class="{% if ind.ema_trend > 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                                {{ ind.ema_trend }}%
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.volume_ratio is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Vol Ratio</span>
+                                            <span class="{% if ind.volume_ratio >= 1.5 %}text-yellow-400{% else %}text-gray-300{% endif %}">
+                                                {{ ind.volume_ratio }}x
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.atr_pct is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">ATR</span>
+                                            <span class="text-gray-300">{{ ind.atr_pct }}%</span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.bb_percent_b is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">BB %B</span>
+                                            <span class="{% if ind.bb_percent_b <= 0 %}text-green-400{% elif ind.bb_percent_b >= 1 %}text-red-400{% else %}text-gray-300{% endif %}">
+                                                {{ ind.bb_percent_b }}
+                                            </span>
+                                        </div>
+                                        {% endif %}
+                                    </div>
+
+                                    <!-- Entry/Exit Levels -->
+                                    <div class="text-xs text-gray-500 uppercase tracking-wider mt-2">Entry / Exit Levels</div>
+                                    <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                                        {% if ind.bb_lower is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">BB Lower (buy)</span>
+                                            <span class="text-green-400">${{ "%.2f"|format(ind.bb_lower) }}</span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.bb_upper is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">BB Upper (sell)</span>
+                                            <span class="text-red-400">${{ "%.2f"|format(ind.bb_upper) }}</span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.vwap is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">VWAP</span>
+                                            <span class="text-blue-400">${{ "%.2f"|format(ind.vwap) }}</span>
+                                        </div>
+                                        {% endif %}
+                                        {% if ind.dynamic_tp_pct is not none %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">TP / SL</span>
+                                            <span class="text-gray-300">{{ ind.dynamic_tp_pct }}% / {{ ind.dynamic_sl_pct }}%</span>
+                                        </div>
+                                        {% endif %}
+                                        {% if pair in open_pairs %}
+                                            {% set pos = positions.get(pair, {}) %}
+                                            {% if pos.side == 'long' %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">TP Price</span>
+                                            <span class="text-green-400">${{ "%.2f"|format(ind.tp_price_long) }}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">SL Price</span>
+                                            <span class="text-red-400">${{ "%.2f"|format(ind.sl_price_long) }}</span>
+                                        </div>
+                                            {% else %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">TP Price</span>
+                                            <span class="text-green-400">${{ "%.2f"|format(ind.tp_price_short) }}</span>
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">SL Price</span>
+                                            <span class="text-red-400">${{ "%.2f"|format(ind.sl_price_short) }}</span>
+                                        </div>
+                                            {% endif %}
+                                        {% else %}
+                                        <div class="flex justify-between">
+                                            <span class="text-gray-400">Long TP/SL</span>
+                                            <span class="text-gray-300">${{ "%.2f"|format(ind.tp_price_long) }} / ${{ "%.2f"|format(ind.sl_price_long) }}</span>
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                    {% else %}
+                                    <div class="text-gray-500 text-sm">No indicator data yet</div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-gray-400">No enabled pairs</p>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Disabled Pairs -->
+            <div class="bg-gray-800 rounded-lg border border-gray-700">
+                <div class="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
+                    <div class="w-3 h-3 bg-red-500 rounded-full"></div>
+                    <h2 class="text-lg font-medium">Disabled Pairs ({{ disabled_pairs|length }})</h2>
+                </div>
+                <div class="p-4">
+                    {% if disabled_pairs %}
+                    <div class="space-y-2">
+                        {% for pair in disabled_pairs %}
+                        {% set p = pairs.get(pair, {}) %}
+                        {% set wr = (p.wins / p.total_trades * 100) if p.total_trades > 0 else 0 %}
+                        <div class="bg-gray-700 rounded overflow-hidden">
+                            <div class="expandable flex items-center justify-between p-2" onclick="toggleExpand(this)">
+                                <div class="flex items-center gap-2">
+                                    <span class="expand-arrow text-gray-500 text-xs">&#9654;</span>
+                                    <span class="font-medium text-gray-400">{{ pair }}</span>
+                                </div>
+                                <span class="text-red-400 text-sm">${{ "%.2f"|format(p.total_pnl or 0) }}</span>
+                            </div>
+                            <div class="expand-content px-4 pb-3">
+                                <div class="pt-2 border-t border-gray-600 text-sm space-y-2">
+                                    <div class="grid grid-cols-3 gap-3">
+                                        <div>
+                                            <div class="text-gray-500 text-xs">Win Rate</div>
+                                            <div class="{% if wr >= 50 %}text-green-400{% elif wr >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                                                {{ "%.1f"|format(wr) }}%
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-500 text-xs">W / L</div>
+                                            <div>{{ p.wins or 0 }} / {{ p.losses or 0 }}</div>
+                                        </div>
+                                        <div>
+                                            <div class="text-gray-500 text-xs">Consec. Losses</div>
+                                            <div class="{% if (p.consecutive_losses or 0) >= 3 %}text-red-400{% endif %}">
+                                                {{ p.consecutive_losses or 0 }}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="text-xs text-gray-500">
+                                        Reason: {{ p.disabled_reason or 'Unknown reason' }}
+                                    </div>
+                                    {% if p.cooldown_until %}
+                                    <div class="text-xs text-yellow-500">
+                                        Cooldown until: {{ p.cooldown_until[:19] }}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="text-green-400">All pairs performing well!</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Pair Performance Table (collapsible) -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 mb-8">
+            <div class="section-toggle px-4 py-3 border-b border-gray-700 flex items-center justify-between" onclick="toggleSection(this)">
+                <h2 class="text-lg font-medium">Pair Performance Details</h2>
+                <span class="expand-arrow open text-gray-500">&#9654;</span>
+            </div>
+            <div class="section-body overflow-x-auto">
+                <table class="w-full">
+                    <thead>
+                        <tr class="text-gray-400 text-sm text-left">
+                            <th class="px-4 py-2">Pair</th>
+                            <th class="px-4 py-2">Status</th>
+                            <th class="px-4 py-2">Trades</th>
+                            <th class="px-4 py-2">W/L</th>
+                            <th class="px-4 py-2">Win Rate</th>
+                            <th class="px-4 py-2">P&L</th>
+                            <th class="px-4 py-2">Consec. Losses</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pair, p in pairs.items() %}
+                        {% set wr = (p.wins / p.total_trades * 100) if p.total_trades > 0 else 0 %}
+                        <tr class="border-t border-gray-700 {% if not p.enabled %}opacity-50{% endif %}">
+                            <td class="px-4 py-2 font-medium">{{ pair }}</td>
+                            <td class="px-4 py-2">
+                                {% if p.enabled %}
+                                <span class="text-green-400">Active</span>
+                                {% else %}
+                                <span class="text-red-400">Disabled</span>
+                                {% endif %}
+                            </td>
+                            <td class="px-4 py-2">{{ p.total_trades }}</td>
+                            <td class="px-4 py-2">{{ p.wins }}/{{ p.losses }}</td>
+                            <td class="px-4 py-2 {% if wr >= 50 %}text-green-400{% elif wr >= 35 %}text-yellow-400{% else %}text-red-400{% endif %}">
+                                {{ "%.1f"|format(wr) }}%
+                            </td>
+                            <td class="px-4 py-2 {% if p.total_pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                ${{ "%.2f"|format(p.total_pnl) }}
+                            </td>
+                            <td class="px-4 py-2 {% if p.consecutive_losses >= 3 %}text-red-400{% else %}text-gray-400{% endif %}">
+                                {{ p.consecutive_losses }}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Trade History (replaces Open Positions) -->
+        <div class="bg-gray-800 rounded-lg border border-gray-700 mb-8">
+            <div class="section-toggle px-4 py-3 border-b border-gray-700 flex items-center justify-between" onclick="toggleSection(this)">
+                <h2 class="text-lg font-medium">Trade History ({{ trade_history|length }} closed{% if positions %} + {{ positions|length }} open{% endif %})</h2>
+                <span class="expand-arrow open text-gray-500">&#9654;</span>
+            </div>
+            <div class="section-body p-4">
+                {% if positions or trade_history %}
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead>
+                            <tr class="text-gray-400 text-left">
+                                <th class="pb-2 pr-3">Pair</th>
+                                <th class="pb-2 pr-3">Side</th>
+                                <th class="pb-2 pr-3">Entry</th>
+                                <th class="pb-2 pr-3">Exit</th>
+                                <th class="pb-2 pr-3">Size</th>
+                                <th class="pb-2 pr-3">P&L</th>
+                                <th class="pb-2 pr-3">P&L %</th>
+                                <th class="pb-2 pr-3">Entry Time (ET)</th>
+                                <th class="pb-2">Exit Time (ET)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Open positions first (highlighted) -->
+                            {% for pair, pos in positions.items() %}
+                            <tr class="border-t border-gray-700 trade-open">
+                                <td class="py-2 pr-3 font-medium">{{ pair }}</td>
+                                <td class="py-2 pr-3">
+                                    <span class="{% if pos.side == 'long' %}text-green-400{% else %}text-red-400{% endif %}">
+                                        {{ pos.side|upper }}
+                                    </span>
+                                </td>
+                                <td class="py-2 pr-3">${{ "%.4f"|format(pos.entry_price) }}</td>
+                                <td class="py-2 pr-3 text-yellow-400">OPEN</td>
+                                <td class="py-2 pr-3">${{ "%.2f"|format(pos.size_usd) }}</td>
+                                <td class="py-2 pr-3 text-gray-400">--</td>
+                                <td class="py-2 pr-3 text-gray-400">--</td>
+                                <td class="py-2 pr-3 text-gray-400 whitespace-nowrap" data-utc="{{ pos.entry_time }}">{{ pos.entry_time[:19] }}</td>
+                                <td class="py-2 text-yellow-400">--</td>
+                            </tr>
+                            {% endfor %}
+                            <!-- Closed trades -->
+                            {% for t in trade_history %}
+                            <tr class="border-t border-gray-700">
+                                <td class="py-2 pr-3 font-medium">{{ t.pair }}</td>
+                                <td class="py-2 pr-3">
+                                    <span class="{% if t.side == 'long' %}text-green-400{% else %}text-red-400{% endif %}">
+                                        {{ t.side|upper }}
+                                    </span>
+                                </td>
+                                <td class="py-2 pr-3">
+                                    {% if t.entry_price %}${{ "%.4f"|format(t.entry_price) }}{% else %}--{% endif %}
+                                </td>
+                                <td class="py-2 pr-3">
+                                    {% if t.exit_price %}${{ "%.4f"|format(t.exit_price) }}{% else %}--{% endif %}
+                                </td>
+                                <td class="py-2 pr-3">
+                                    {% if t.size_usd %}${{ "%.2f"|format(t.size_usd) }}{% else %}--{% endif %}
+                                </td>
+                                <td class="py-2 pr-3 {% if t.pnl >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                    ${{ "%.2f"|format(t.pnl) }}
+                                </td>
+                                <td class="py-2 pr-3 {% if t.pnl_percent >= 0 %}text-green-400{% else %}text-red-400{% endif %}">
+                                    {{ "%.2f"|format(t.pnl_percent) }}%
+                                </td>
+                                <td class="py-2 pr-3 text-gray-400 whitespace-nowrap" data-utc="{{ t.entry_time }}">{{ t.entry_time[:19] if t.entry_time else '--' }}</td>
+                                <td class="py-2 text-gray-400 whitespace-nowrap" data-utc="{{ t.exit_time }}">{{ t.exit_time[:19] if t.exit_time else '--' }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p class="text-gray-400">No trades yet</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="mt-8 text-center text-gray-500 text-sm">
+            <p>Auto-refreshes every 60 seconds | Per-pair optimized TP/SL (see config/scalping.yaml)</p>
+        </div>
+    </div>
+
+    <script>
+        function toggleExpand(el) {
+            const content = el.nextElementSibling;
+            const arrow = el.querySelector('.expand-arrow');
+            content.classList.toggle('open');
+            arrow.classList.toggle('open');
+        }
+
+        function toggleSection(el) {
+            const body = el.nextElementSibling;
+            const arrow = el.querySelector('.expand-arrow');
+            body.classList.toggle('collapsed');
+            arrow.classList.toggle('open');
+        }
+
+        // Uptime counter
+        (function() {
+            const uptimeSeconds = {{ uptime_seconds }};
+            const startedAt = Date.now() - (uptimeSeconds * 1000);
+
+            function formatUptime(ms) {
+                const s = Math.floor(ms / 1000);
+                const days = Math.floor(s / 86400);
+                const hrs = Math.floor((s % 86400) / 3600);
+                const mins = Math.floor((s % 3600) / 60);
+                const secs = s % 60;
+                if (days > 0) return days + 'd ' + hrs + 'h ' + mins + 'm';
+                if (hrs > 0) return hrs + 'h ' + mins + 'm ' + secs + 's';
+                return mins + 'm ' + secs + 's';
+            }
+
+            function updateUptime() {
+                const elapsed = Date.now() - startedAt;
+                document.getElementById('uptime').textContent = 'Uptime: ' + formatUptime(elapsed);
+            }
+            updateUptime();
+            setInterval(updateUptime, 1000);
+        })();
+
+        // Convert UTC timestamps to ET
+        (function() {
+            document.querySelectorAll('[data-utc]').forEach(function(el) {
+                const utc = el.getAttribute('data-utc');
+                if (!utc || utc === 'None') return;
+                try {
+                    const d = new Date(utc.endsWith('Z') || utc.includes('+') ? utc : utc + 'Z');
+                    if (isNaN(d.getTime())) return;
+                    el.textContent = d.toLocaleString('en-US', {
+                        timeZone: 'America/New_York',
+                        month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit', second: '2-digit',
+                        hour12: false
+                    });
+                } catch(e) {}
+            });
+        })();
+    </script>
+</body>
+</html>
