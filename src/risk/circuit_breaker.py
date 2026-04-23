@@ -228,6 +228,17 @@ class CircuitBreaker:
         if current_equity > self._peak_equity:
             self._peak_equity = current_equity
 
+        # Expire cooldown if due -- this resets peak to current equity,
+        # so the drawdown check below starts from a fresh baseline.
+        self._check_cooldown_expired()
+
+        # If we're still in cooldown (or emergency), don't re-trigger.
+        # Re-triggering here would extend cooldown_until by another full
+        # period every time update_equity runs (once per trading cycle),
+        # permanently pinning the circuit breaker OPEN until manual reset.
+        if self._state != CircuitState.CLOSED:
+            return
+
         global_dd_pct = self._global_drawdown_pct()
         if global_dd_pct >= self.global_max_drawdown_pct:
             self._trigger_cooldown(

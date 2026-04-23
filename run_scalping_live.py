@@ -251,7 +251,13 @@ class ScalpingTrader:
                 with open(state_file) as f:
                     state = json.load(f)
                 self.positions = state.get('positions', {})
-                self.metrics = state.get('metrics', self.metrics)
+                # Load persisted metrics but keep this process's start_time
+                # so "Uptime" reflects how long the trader has been running,
+                # not how long since state.json was first created.
+                loaded_metrics = state.get('metrics', {})
+                process_start_time = self.metrics['start_time']
+                self.metrics = {**self.metrics, **loaded_metrics,
+                                'start_time': process_start_time}
                 self.capital = state.get('capital', self.capital)
                 self.pair_manager.from_dict(state.get('pair_manager', {}))
                 if 'circuit_breaker' in state:
