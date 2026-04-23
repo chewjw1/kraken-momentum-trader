@@ -452,7 +452,10 @@ class ScalpingTrader:
         tp_mult = adjustments.get('take_profit_multiplier', 1.0)
         sl_mult = adjustments.get('stop_loss_multiplier', 1.0)
         conf_offset = adjustments.get('min_confirmations_offset', 0)
+        short_conf_offset = adjustments.get('short_confirmations_offset', 0)
         ema_enabled = adjustments.get('ema_filter_enabled', True)
+        trend_short = adjustments.get('trend_short_enabled', False)
+        shorting = adjustments.get('shorting_enabled', True)
 
         # Rebuild default strategy with all indicator params preserved
         base = self._base_default_config
@@ -483,8 +486,9 @@ class ScalpingTrader:
             atr_stop_multiplier=base.atr_stop_multiplier,
             atr_tp_multiplier=base.atr_tp_multiplier,
             use_atr_stops=base.use_atr_stops,
-            shorting_enabled=base.shorting_enabled,
-            short_min_confirmations=base.short_min_confirmations,
+            shorting_enabled=shorting,
+            short_min_confirmations=max(1, base.short_min_confirmations + short_conf_offset),
+            trend_short_enabled=trend_short,
         )
         self.strategy = ScalpingStrategy(adj_config)
 
@@ -517,8 +521,9 @@ class ScalpingTrader:
                 atr_stop_multiplier=params.get('atr_stop_multiplier', base.atr_stop_multiplier),
                 atr_tp_multiplier=params.get('atr_tp_multiplier', base.atr_tp_multiplier),
                 use_atr_stops=params.get('use_atr_stops', base.use_atr_stops),
-                shorting_enabled=params.get('shorting_enabled', base.shorting_enabled),
-                short_min_confirmations=params.get('short_min_confirmations', base.short_min_confirmations),
+                shorting_enabled=shorting and params.get('shorting_enabled', True),
+                short_min_confirmations=max(1, params.get('short_min_confirmations', base.short_min_confirmations) + short_conf_offset),
+                trend_short_enabled=trend_short,
             )
             self.pair_strategies[pair] = ScalpingStrategy(pair_config)
 

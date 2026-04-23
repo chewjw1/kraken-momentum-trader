@@ -255,7 +255,10 @@ class ScalpingBacktester:
             tp_mult = adjustments.get('take_profit_multiplier', 1.0)
             sl_mult = adjustments.get('stop_loss_multiplier', 1.0)
             conf_offset = adjustments.get('min_confirmations_offset', 0)
+            short_conf_offset = adjustments.get('short_confirmations_offset', 0)
             ema_enabled = adjustments.get('ema_filter_enabled', True)
+            trend_short = adjustments.get('trend_short_enabled', False)
+            shorting = adjustments.get('shorting_enabled', self.scalping_config.shorting_enabled)
 
             adjusted_config = ScalpingConfig(
                 take_profit_percent=self.scalping_config.take_profit_percent * tp_mult,
@@ -270,7 +273,6 @@ class ScalpingBacktester:
                 min_confirmations=max(1, self.scalping_config.min_confirmations + conf_offset),
                 fee_percent=self.scalping_config.fee_percent,
                 ema_filter_enabled=ema_enabled,
-                # New indicator params
                 stoch_k_period=self.scalping_config.stoch_k_period,
                 stoch_d_period=self.scalping_config.stoch_d_period,
                 stoch_oversold=self.scalping_config.stoch_oversold,
@@ -283,8 +285,9 @@ class ScalpingBacktester:
                 atr_stop_multiplier=self.scalping_config.atr_stop_multiplier,
                 atr_tp_multiplier=self.scalping_config.atr_tp_multiplier,
                 use_atr_stops=self.scalping_config.use_atr_stops,
-                shorting_enabled=self.scalping_config.shorting_enabled,
-                short_min_confirmations=self.scalping_config.short_min_confirmations,
+                shorting_enabled=shorting,
+                short_min_confirmations=max(1, self.scalping_config.short_min_confirmations + short_conf_offset),
+                trend_short_enabled=trend_short,
             )
             self.strategy = ScalpingStrategy(adjusted_config)
 

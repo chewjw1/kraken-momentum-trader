@@ -79,18 +79,20 @@ REGIME_ADJUSTMENTS: Dict[MarketRegime, Dict[str, Any]] = {
     MarketRegime.BULL: {
         "take_profit_multiplier": 1.3,     # Wider TP -- let winners run
         "stop_loss_multiplier": 1.0,       # Normal SL
-        "position_scale_multiplier": 1.2,  # Slightly larger positions
+        "position_scale_multiplier": 1.0,  # Normal positions (no leveraging up)
         "min_confirmations_offset": 0,     # Normal entry bar
         "ema_filter_enabled": True,        # Keep filter on
-        "description": "Bull: wider TP, normal SL, increased size",
+        "shorting_enabled": False,         # Don't short in bull markets
+        "description": "Bull: wider TP, normal SL, longs only",
     },
     MarketRegime.BEAR: {
-        "take_profit_multiplier": 0.7,     # Tighter TP -- take profits fast
-        "stop_loss_multiplier": 0.8,       # Tighter SL -- cut losses faster
-        "position_scale_multiplier": 0.5,  # Half position size
-        "min_confirmations_offset": 1,     # Require 1 extra confirmation
+        "take_profit_multiplier": 0.8,     # Slightly tighter TP
+        "stop_loss_multiplier": 1.5,       # WIDER SL -- bear = more volatility/whipsaw
+        "position_scale_multiplier": 0.3,  # 30% position size -- capital preservation
+        "min_confirmations_offset": 3,     # +3 long confirmations (near impossible)
         "ema_filter_enabled": True,        # Keep filter on
-        "description": "Bear: tight TP/SL, halved size, extra confirmation",
+        "trend_short_enabled": True,       # Enable trend-following shorts
+        "description": "Bear: wider stops, minimal size, mostly sit out",
     },
     MarketRegime.SIDEWAYS: {
         "take_profit_multiplier": 1.0,     # Base TP
@@ -101,12 +103,12 @@ REGIME_ADJUSTMENTS: Dict[MarketRegime, Dict[str, Any]] = {
         "description": "Sideways: base params, EMA filter off (ranging)",
     },
     MarketRegime.UNKNOWN: {
-        "take_profit_multiplier": 1.0,
-        "stop_loss_multiplier": 1.0,
-        "position_scale_multiplier": 0.7,  # Conservative until we know
-        "min_confirmations_offset": 1,
+        "take_profit_multiplier": 0.9,
+        "stop_loss_multiplier": 1.3,       # Wider stops (unknown = volatile)
+        "position_scale_multiplier": 0.3,  # Very conservative until we know
+        "min_confirmations_offset": 3,     # Near-impossible longs (default cautious)
         "ema_filter_enabled": True,
-        "description": "Unknown: conservative sizing until regime is clear",
+        "description": "Unknown: minimal exposure until regime is clear",
     },
 }
 

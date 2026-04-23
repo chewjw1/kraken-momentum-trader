@@ -122,6 +122,9 @@ class ScalpingConfig:
     shorting_enabled: bool = True  # Enable short selling in bear regimes
     short_min_confirmations: int = 3  # Require more confirmations for shorts
 
+    # Trend-following shorts (for bear markets — don't require overbought)
+    trend_short_enabled: bool = False
+
 
 class ScalpingStrategy(BaseStrategy):
     """
@@ -319,9 +322,16 @@ class ScalpingStrategy(BaseStrategy):
 
         # Try short entry if enabled
         if self.config.shorting_enabled:
+            # Mean-reversion short (overbought → expect pulldown)
             short_signal = self._check_short_entry(market_data, signals, timestamp)
             if short_signal.signal_type == SignalType.SELL_SHORT:
                 return short_signal
+
+            # Trend-following short (bear market — no overbought needed)
+            if self.config.trend_short_enabled:
+                trend_short = self._check_trend_short_entry(market_data, signals, timestamp)
+                if trend_short.signal_type == SignalType.SELL_SHORT:
+                    return trend_short
 
         return self._no_signal(
             market_data.pair,
@@ -577,6 +587,127 @@ class ScalpingStrategy(BaseStrategy):
         return self._no_signal(
             market_data.pair,
             f"Short: {confirmations:.1f} confirmations (need {self.config.short_min_confirmations})",
+            timestamp
+        )
+
+    def _check_trend_short_entry(
+        self,
+        market_data: MarketData,
+        signals: dict,
+        timestamp: datetime
+    ) -> Signal:
+        """
+        Trend-following short entry for bear markets.
+
+        Unlike the mean-reversion short (requires overbought), this fires
+        when the trend is clearly down: EMA bearish + MACD bearish + price
+        below VWAP. Catches sustained downtrends that never reach overbought.
+        """
+        confirmations = 0
+        reasons = []
+
+        ema = signals.get("ema")
+        macd = signals.get("macd")
+        vwap = signals.get("vwap")
+        rsi = signals.get("rsi")
+        bb = signals.get("bollinger")
+        current_price = signals.get("current_price", 0)
+
+        stoch = signals.get("stochastic")
+
+        # Gate: price must be falling over recent candles (not just historically bearish)
+        closes = [c.close for c in market_data.ohlc]
+        if len(closes) >= 11:
+            recent_change = (closes[-1] - closes[-11]) / closes[-11] * 100
+            if recent_change > 0:
+                return self._no_signal(
+                    market_data.pair,
+                    f"Trend short blocked: price rising over last 10 candles ({recent_change:+.2f}%)",
+                    timestamp
+                )
+
+        # EMA bearish: require strong downtrend, not just mildly negative
+        if ema and ema.trend_strength < -0.5:
+            confirmations += 1
+            reasons.append(f"EMA bearish ({ema.trend_strength:.2f}%)")
+
+        # MACD bearish: histogram negative AND falling (active selling)
+        if macd and macd.histogram < 0 and not macd.histogram_increasing:
+            confirmations += 1
+            reasons.append("MACD negative & falling")
+
+        # Price below VWAP with meaningful distance
+        if vwap and vwap.is_below and vwap.price_vs_vwap < -0.3:
+            confirmations += 1
+            reasons.append(f"Below VWAP ({vwap.price_vs_vwap:.2f}%)")
+
+        # RSI in bearish zone (30-45) — confirms downward momentum
+        if rsi and 30 <= rsi.value < 45:
+            confirmations += 0.5
+            reasons.append(f"RSI bearish ({rsi.value:.1f})")
+
+        # Stochastic falling from mid-range (fresh momentum)
+        if stoch and stoch.k_value < 40 and stoch.k_value > 20:
+            confirmations += 0.5
+            reasons.append(f"Stoch mid-range ({stoch.k_value:.1f})")
+
+        # Price in lower third of Bollinger (stronger downward pressure)
+        if bb and bb.percent_b < 0.3:
+            confirmations += 0.5
+            reasons.append(f"BB lower third ({bb.percent_b:.2f})")
+
+        # Require 3.5 confirmations for trend short (was 3)
+        if confirmations >= 3.5:
+            # Don't short if RSI is deeply oversold (bounce risk)
+            if rsi and rsi.value < 25:
+                return self._no_signal(
+                    market_data.pair,
+                    f"Trend short blocked: RSI too oversold ({rsi.value:.1f}), bounce risk",
+                    timestamp
+                )
+
+            # Don't short if RSI is above 55 (not bearish enough)
+            if rsi and rsi.value > 55:
+                return self._no_signal(
+                    market_data.pair,
+                    f"Trend short blocked: RSI too high ({rsi.value:.1f}), not bearish",
+                    timestamp
+                )
+
+            stop_pct, tp_pct = self._get_dynamic_stops(signals)
+
+            total_fees = self.config.fee_percent * 2
+            net_profit = tp_pct - total_fees
+            if net_profit < self.config.min_profit_after_fees:
+                return self._no_signal(
+                    market_data.pair,
+                    f"Trend short net profit {net_profit:.2f}% below minimum",
+                    timestamp
+                )
+
+            return Signal(
+                signal_type=SignalType.SELL_SHORT,
+                pair=market_data.pair,
+                price=current_price,
+                timestamp=timestamp,
+                strength=min(confirmations / 5, 1.0),
+                reason=f"Trend short: {', '.join(reasons)}",
+                indicators={
+                    "ema_trend": ema.trend_strength if ema else None,
+                    "macd_histogram": macd.histogram if macd else None,
+                    "vwap_distance": vwap.price_vs_vwap if vwap else None,
+                    "rsi": rsi.value if rsi else None,
+                    "dynamic_stop": stop_pct,
+                    "dynamic_tp": tp_pct,
+                    "confirmations": confirmations,
+                    "side": "short",
+                    "short_type": "trend_following",
+                }
+            )
+
+        return self._no_signal(
+            market_data.pair,
+            f"Trend short: {confirmations:.1f}/3 confirmations",
             timestamp
         )
 

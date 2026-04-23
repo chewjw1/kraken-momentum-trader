@@ -1,0 +1,542 @@
+[
+  {
+    "pair": "AVAX/USD",
+    "trades": 2,
+    "wins": 1,
+    "losses": 1,
+    "win_rate": 50.0,
+    "total_pnl_usd": 19.35,
+    "total_pnl_pct": 0.19,
+    "profit_factor": 1.53,
+    "max_drawdown_pct": 0.37,
+    "final_capital": 10019.36,
+    "trade_details": [
+      {
+        "entry_time": "2026-03-08T12:00:00+00:00",
+        "exit_time": "2026-03-10T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 9.51621951,
+        "exit_price": 9.949207497705002,
+        "pnl_pct": -4.87,
+        "pnl_usd": -36.53,
+        "reason": "Intra-candle stop: -4.87%"
+      },
+      {
+        "entry_time": "2026-03-16T00:00:00+00:00",
+        "exit_time": "2026-03-22T12:00:00+00:00",
+        "side": "short",
+        "entry_price": 10.5107330045,
+        "exit_price": 9.6911041305,
+        "pnl_pct": 7.478,
+        "pnl_usd": 55.88,
+        "reason": "Price at lower BB, cover short. P&L: 7.84%"
+      }
+    ],
+    "regime": "unknown"
+  },
+  {
+    "pair": "NEAR/USD",
+    "trades": 14,
+    "wins": 3,
+    "losses": 11,
+    "win_rate": 21.4,
+    "total_pnl_usd": -51.28,
+    "total_pnl_pct": -0.51,
+    "profit_factor": 0.78,
+    "max_drawdown_pct": 1.05,
+    "final_capital": 9948.72,
+    "trade_details": [
+      {
+        "entry_time": "2026-02-03T12:00:00+00:00",
+        "exit_time": "2026-02-03T16:00:00+00:00",
+        "side": "short",
+        "entry_price": 3.3240111629999998,
+        "exit_price": 3.4071114420749993,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.15,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-02-05T20:00:00+00:00",
+        "exit_time": "2026-02-06T04:00:00+00:00",
+        "side": "short",
+        "entry_price": 3.251749312,
+        "exit_price": 3.3330430447999997,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.11,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-02-08T04:00:00+00:00",
+        "exit_time": "2026-02-13T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 3.1731616255,
+        "exit_price": 2.934900717,
+        "pnl_pct": 7.189,
+        "pnl_usd": 53.69,
+        "reason": "Price at lower BB, cover short. P&L: 7.55%"
+      },
+      {
+        "entry_time": "2026-02-13T20:00:00+00:00",
+        "exit_time": "2026-02-15T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.9464390435,
+        "exit_price": 3.0201000195874994,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.17,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-02-17T00:00:00+00:00",
+        "exit_time": "2026-02-18T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.8161642135,
+        "exit_price": 2.8865683188375,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.13,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-02-20T12:00:00+00:00",
+        "exit_time": "2026-02-20T16:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.7090378035,
+        "exit_price": 2.7767637485874994,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.08,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-02-25T16:00:00+00:00",
+        "exit_time": "2026-02-25T20:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.5182672365000003,
+        "exit_price": 2.5812239174125002,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.04,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-03T00:00:00+00:00",
+        "exit_time": "2026-03-03T04:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.3693667240000003,
+        "exit_price": 2.4286008921,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.0,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-08T04:00:00+00:00",
+        "exit_time": "2026-03-13T20:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.2558365175,
+        "exit_price": 2.063659314,
+        "pnl_pct": 8.199,
+        "pnl_usd": 60.92,
+        "reason": "Price at lower BB, cover short. P&L: 8.56%"
+      },
+      {
+        "entry_time": "2026-03-15T08:00:00+00:00",
+        "exit_time": "2026-03-15T16:00:00+00:00",
+        "side": "short",
+        "entry_price": 2.0322843495,
+        "exit_price": 2.0830914582374995,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.08,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-17T16:00:00+00:00",
+        "exit_time": "2026-03-18T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.975697657,
+        "exit_price": 2.0250900984249998,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.04,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-20T08:00:00+00:00",
+        "exit_time": "2026-03-26T08:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.9069370545000002,
+        "exit_price": 1.731409272,
+        "pnl_pct": 8.885,
+        "pnl_usd": 66.13,
+        "reason": "RSI+Stoch oversold, cover short. P&L: 9.25%"
+      },
+      {
+        "entry_time": "2026-03-27T04:00:00+00:00",
+        "exit_time": "2026-03-27T08:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.7399026135,
+        "exit_price": 1.7834001788374998,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.13,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-29T16:00:00+00:00",
+        "exit_time": "2026-03-29T20:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.702044552,
+        "exit_price": 1.7445956658,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.09,
+        "reason": "Intra-candle stop: -2.82%"
+      }
+    ],
+    "regime": "bear"
+  },
+  {
+    "pair": "ATOM/USD",
+    "trades": 1,
+    "wins": 1,
+    "losses": 0,
+    "win_rate": 100.0,
+    "total_pnl_usd": 54.58,
+    "total_pnl_pct": 0.55,
+    "profit_factor": Infinity,
+    "max_drawdown_pct": 0.0,
+    "final_capital": 10054.58,
+    "trade_details": [
+      {
+        "entry_time": "2026-01-27T00:00:00+00:00",
+        "exit_time": "2026-02-26T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.9824232925,
+        "exit_price": 1.8318244544999998,
+        "pnl_pct": 7.277,
+        "pnl_usd": 54.58,
+        "reason": "Price at lower BB, cover short. P&L: 7.64%"
+      }
+    ],
+    "regime": "unknown"
+  },
+  {
+    "pair": "DOT/USD",
+    "trades": 3,
+    "wins": 1,
+    "losses": 2,
+    "win_rate": 33.3,
+    "total_pnl_usd": -29.83,
+    "total_pnl_pct": -0.3,
+    "profit_factor": 0.64,
+    "max_drawdown_pct": 0.83,
+    "final_capital": 9970.17,
+    "trade_details": [
+      {
+        "entry_time": "2026-03-06T08:00:00+00:00",
+        "exit_time": "2026-03-13T08:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.519677781,
+        "exit_price": 1.4054043509999998,
+        "pnl_pct": 7.2,
+        "pnl_usd": 54.0,
+        "reason": "Price at lower BB, cover short. P&L: 7.57%"
+      },
+      {
+        "entry_time": "2026-03-15T00:00:00+00:00",
+        "exit_time": "2026-03-16T16:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.3993649675,
+        "exit_price": 1.47283162829375,
+        "pnl_pct": -5.57,
+        "pnl_usd": -42.0,
+        "reason": "Intra-candle stop: -5.57%"
+      },
+      {
+        "entry_time": "2026-03-18T20:00:00+00:00",
+        "exit_time": "2026-03-19T04:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.36817557,
+        "exit_price": 1.440004787425,
+        "pnl_pct": -5.57,
+        "pnl_usd": -41.83,
+        "reason": "Intra-candle stop: -5.57%"
+      }
+    ],
+    "regime": "bear"
+  },
+  {
+    "pair": "SOL/USD",
+    "trades": 3,
+    "wins": 0,
+    "losses": 3,
+    "win_rate": 0.0,
+    "total_pnl_usd": -65.55,
+    "total_pnl_pct": -0.66,
+    "profit_factor": 0.0,
+    "max_drawdown_pct": 0.66,
+    "final_capital": 9934.44,
+    "trade_details": [
+      {
+        "entry_time": "2026-03-03T12:00:00+00:00",
+        "exit_time": "2026-03-05T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 87.336913698,
+        "exit_price": 89.607673454148,
+        "pnl_pct": -2.92,
+        "pnl_usd": -21.9,
+        "reason": "Intra-candle stop: -2.92%"
+      },
+      {
+        "entry_time": "2026-03-15T00:00:00+00:00",
+        "exit_time": "2026-03-15T12:00:00+00:00",
+        "side": "short",
+        "entry_price": 84.95246351950001,
+        "exit_price": 87.16122757100702,
+        "pnl_pct": -2.92,
+        "pnl_usd": -21.85,
+        "reason": "Intra-candle stop: -2.92%"
+      },
+      {
+        "entry_time": "2026-03-25T00:00:00+00:00",
+        "exit_time": "2026-03-25T12:00:00+00:00",
+        "side": "short",
+        "entry_price": 84.37137620850001,
+        "exit_price": 86.56503198992101,
+        "pnl_pct": -2.92,
+        "pnl_usd": -21.8,
+        "reason": "Intra-candle stop: -2.92%"
+      }
+    ],
+    "regime": "unknown"
+  },
+  {
+    "pair": "ETH/USD",
+    "trades": 3,
+    "wins": 0,
+    "losses": 3,
+    "win_rate": 0.0,
+    "total_pnl_usd": -161.35,
+    "total_pnl_pct": -1.61,
+    "profit_factor": 0.0,
+    "max_drawdown_pct": 1.61,
+    "final_capital": 9838.64,
+    "trade_details": [
+      {
+        "entry_time": "2026-02-14T08:00:00+00:00",
+        "exit_time": "2026-02-15T04:00:00+00:00",
+        "side": "short",
+        "entry_price": 1866.1565879335,
+        "exit_price": 1912.8105026318374,
+        "pnl_pct": -2.82,
+        "pnl_usd": -21.15,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-19T20:00:00+00:00",
+        "exit_time": "2026-03-21T04:00:00+00:00",
+        "side": "long",
+        "entry_price": 2221.141033509,
+        "exit_price": 2165.612507671275,
+        "pnl_pct": -2.82,
+        "pnl_usd": -70.35,
+        "reason": "Intra-candle stop: -2.82%"
+      },
+      {
+        "entry_time": "2026-03-27T16:00:00+00:00",
+        "exit_time": "2026-03-27T20:00:00+00:00",
+        "side": "long",
+        "entry_price": 2170.90156833,
+        "exit_price": 2116.6290291217497,
+        "pnl_pct": -2.82,
+        "pnl_usd": -69.85,
+        "reason": "Intra-candle stop: -2.82%"
+      }
+    ],
+    "regime": "bear"
+  },
+  {
+    "pair": "LINK/USD",
+    "trades": 4,
+    "wins": 0,
+    "losses": 4,
+    "win_rate": 0.0,
+    "total_pnl_usd": -173.47,
+    "total_pnl_pct": -1.73,
+    "profit_factor": 0.0,
+    "max_drawdown_pct": 1.73,
+    "final_capital": 9826.53,
+    "trade_details": [
+      {
+        "entry_time": "2026-02-12T08:00:00+00:00",
+        "exit_time": "2026-02-15T12:00:00+00:00",
+        "side": "short",
+        "entry_price": 8.441471153,
+        "exit_price": 8.94795942218,
+        "pnl_pct": -6.32,
+        "pnl_usd": -47.4,
+        "reason": "Intra-candle stop: -6.32%"
+      },
+      {
+        "entry_time": "2026-03-05T16:00:00+00:00",
+        "exit_time": "2026-03-12T16:00:00+00:00",
+        "side": "short",
+        "entry_price": 9.0149792555,
+        "exit_price": 9.55587801083,
+        "pnl_pct": -6.32,
+        "pnl_usd": -47.18,
+        "reason": "Intra-candle stop: -6.32%"
+      },
+      {
+        "entry_time": "2026-03-14T16:00:00+00:00",
+        "exit_time": "2026-03-16T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 9.768205454,
+        "exit_price": 10.15893367216,
+        "pnl_pct": -4.32,
+        "pnl_usd": -32.09,
+        "reason": "Intra-candle stop: -4.32%"
+      },
+      {
+        "entry_time": "2026-03-22T00:00:00+00:00",
+        "exit_time": "2026-03-25T04:00:00+00:00",
+        "side": "short",
+        "entry_price": 8.7319088615,
+        "exit_price": 9.25582339319,
+        "pnl_pct": -6.32,
+        "pnl_usd": -46.8,
+        "reason": "Intra-candle stop: -6.32%"
+      }
+    ],
+    "regime": "bear"
+  },
+  {
+    "pair": "BTC/USD",
+    "trades": 6,
+    "wins": 2,
+    "losses": 4,
+    "win_rate": 33.3,
+    "total_pnl_usd": -44.25,
+    "total_pnl_pct": -0.44,
+    "profit_factor": 0.62,
+    "max_drawdown_pct": 1.11,
+    "final_capital": 9955.75,
+    "trade_details": [
+      {
+        "entry_time": "2026-02-13T04:00:00+00:00",
+        "exit_time": "2026-02-13T16:00:00+00:00",
+        "side": "short",
+        "entry_price": 66730.508055,
+        "exit_price": 68661.883785,
+        "pnl_pct": -3.214,
+        "pnl_usd": -24.11,
+        "reason": "Short SL: -2.84% (stop: -2.54%)"
+      },
+      {
+        "entry_time": "2026-02-17T20:00:00+00:00",
+        "exit_time": "2026-02-23T04:00:00+00:00",
+        "side": "short",
+        "entry_price": 67460.47289,
+        "exit_price": 66648.83776499999,
+        "pnl_pct": 0.883,
+        "pnl_usd": 6.61,
+        "reason": "RSI+Stoch oversold, cover short. P&L: 1.25%"
+      },
+      {
+        "entry_time": "2026-02-25T04:00:00+00:00",
+        "exit_time": "2026-02-25T08:00:00+00:00",
+        "side": "short",
+        "entry_price": 64825.59099,
+        "exit_price": 68715.1264494,
+        "pnl_pct": -6.32,
+        "pnl_usd": -47.32,
+        "reason": "Intra-candle stop: -6.32%"
+      },
+      {
+        "entry_time": "2026-02-27T20:00:00+00:00",
+        "exit_time": "2026-03-07T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 65848.8591,
+        "exit_price": 68120.97346499999,
+        "pnl_pct": -3.77,
+        "pnl_usd": -28.1,
+        "reason": "Short SL: -3.40% (stop: -2.59%)"
+      },
+      {
+        "entry_time": "2026-03-09T00:00:00+00:00",
+        "exit_time": "2026-03-09T08:00:00+00:00",
+        "side": "short",
+        "entry_price": 65939.263875,
+        "exit_price": 67328.46741,
+        "pnl_pct": -2.427,
+        "pnl_usd": -18.03,
+        "reason": "Short SL: -2.06% (stop: -1.80%)"
+      },
+      {
+        "entry_time": "2026-03-21T20:00:00+00:00",
+        "exit_time": "2026-03-25T00:00:00+00:00",
+        "side": "long",
+        "entry_price": 68745.87576,
+        "exit_price": 70820.442065,
+        "pnl_pct": 2.698,
+        "pnl_usd": 66.7,
+        "reason": "Take profit: 3.07% (ATR target: 2.77%)"
+      }
+    ],
+    "regime": "bear"
+  },
+  {
+    "pair": "XRP/USD",
+    "trades": 2,
+    "wins": 2,
+    "losses": 0,
+    "win_rate": 100.0,
+    "total_pnl_usd": 100.66,
+    "total_pnl_pct": 1.01,
+    "profit_factor": Infinity,
+    "max_drawdown_pct": 0.0,
+    "final_capital": 10100.66,
+    "trade_details": [
+      {
+        "entry_time": "2026-03-12T08:00:00+00:00",
+        "exit_time": "2026-03-22T08:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.6297767040000002,
+        "exit_price": 1.5180776595,
+        "pnl_pct": 6.534,
+        "pnl_usd": 49.0,
+        "reason": "Short TP: 6.90% (target: 6.61%)"
+      },
+      {
+        "entry_time": "2026-03-23T04:00:00+00:00",
+        "exit_time": "2026-03-31T00:00:00+00:00",
+        "side": "short",
+        "entry_price": 1.5035658410000001,
+        "exit_price": 1.3957025025,
+        "pnl_pct": 6.854,
+        "pnl_usd": 51.66,
+        "reason": "Price at lower BB, cover short. P&L: 7.22%"
+      }
+    ],
+    "regime": "bear"
+  },
+  {
+    "pair": "POL/USD",
+    "trades": 1,
+    "wins": 1,
+    "losses": 0,
+    "win_rate": 100.0,
+    "total_pnl_usd": 54.92,
+    "total_pnl_pct": 0.55,
+    "profit_factor": Infinity,
+    "max_drawdown_pct": 0.0,
+    "final_capital": 10054.92,
+    "trade_details": [
+      {
+        "entry_time": "2026-03-11T12:00:00+00:00",
+        "exit_time": "2026-03-20T12:00:00+00:00",
+        "side": "short",
+        "entry_price": 0.10166914,
+        "exit_price": 0.093898926,
+        "pnl_pct": 7.323,
+        "pnl_usd": 54.92,
+        "reason": "Price at lower BB, cover short. P&L: 7.69%"
+      }
+    ],
+    "regime": "unknown"
+  }
+]
