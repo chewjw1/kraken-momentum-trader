@@ -937,12 +937,12 @@ class ScalpingTrader:
                 deployed_capital = sum(p['size_usd'] for p in self.positions.values())
                 available_capital = self.capital - deployed_capital
 
-                # Scale position: adaptive manager * regime adjustment
-                scale = self.pair_manager.get_position_scale(pair)
+                # Scale position: regime adjustment * signal strength
                 regime_scale = self._regime_adjustments.get(
                     'position_scale_multiplier', 1.0
                 )
-                total_scale = scale * regime_scale
+                strength_scale = 0.5 + 0.5 * signal.strength
+                total_scale = regime_scale * strength_scale
 
                 size_usd = self.capital * (self.position_size_pct / 100) * total_scale
 
@@ -988,7 +988,7 @@ class ScalpingTrader:
                     price=f"${fill_price:.2f}",
                     size_usd=f"${size_usd:.2f}",
                     order_id=order_result.get('order_id', ''),
-                    scale=f"{total_scale:.2f}x (adaptive={scale:.2f} regime={regime_scale:.2f})",
+                    scale=f"{total_scale:.2f}x (strength={signal.strength:.2f} regime={regime_scale:.2f})",
                     regime=self._current_regime.value,
                     available_after=f"${available_capital - size_usd:.2f}"
                 )
