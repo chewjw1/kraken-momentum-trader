@@ -81,11 +81,8 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
     entry_time = None
     pos_size_usd = 0.0
     pos_side = "long"
-    cooldown_until = 0  # candle index after which trading is allowed
-    STOP_COOLDOWN = 12  # candles to wait after a stop loss (48h on 4h)
-    TP_COOLDOWN = 5     # candles to wait after a take profit (20h on 4h)
+    cooldown_until = 0
     consecutive_losses = 0
-    LOSS_STREAK_PAUSE = 30  # 5 day pause after 3 consecutive losses
 
     regime_detector = RegimeDetector(RegimeConfig(
         bull_slope_threshold=0.02, bear_slope_threshold=-0.02
@@ -242,8 +239,6 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
                 })
                 in_position = False
                 consecutive_losses += 1
-                pause = LOSS_STREAK_PAUSE if consecutive_losses >= 3 else STOP_COOLDOWN
-                cooldown_until = i + pause
                 continue
 
             position = Position(pair=pair, side=pos_side, entry_price=entry_price,
@@ -280,14 +275,9 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
                 in_position = False
                 if net_pnl > 0:
                     consecutive_losses = 0
-                    cooldown_until = i + TP_COOLDOWN
                 else:
                     consecutive_losses += 1
-                    pause = LOSS_STREAK_PAUSE if consecutive_losses >= 3 else STOP_COOLDOWN
-                    cooldown_until = i + pause
         else:
-            if i < cooldown_until:
-                continue
             signal = strategy.analyze(md, None)
             scaled_pct = position_pct * position_scale
             if signal.signal_type.value == "buy":

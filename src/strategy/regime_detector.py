@@ -86,13 +86,14 @@ REGIME_ADJUSTMENTS: Dict[MarketRegime, Dict[str, Any]] = {
         "description": "Bull: wider TP, normal SL, longs only",
     },
     MarketRegime.BEAR: {
-        "take_profit_multiplier": 0.8,     # Slightly tighter TP
-        "stop_loss_multiplier": 1.5,       # WIDER SL -- bear = more volatility/whipsaw
-        "position_scale_multiplier": 0.3,  # 30% position size -- capital preservation
-        "min_confirmations_offset": 3,     # +3 long confirmations (near impossible)
+        "take_profit_multiplier": 0.9,     # Slightly tighter TP
+        "stop_loss_multiplier": 1.0,       # Normal SL (wider hurts on real data)
+        "position_scale_multiplier": 0.8,  # Moderate reduction, not aggressive
+        "min_confirmations_offset": 1,     # +1 extra long confirmation
         "ema_filter_enabled": True,        # Keep filter on
         "trend_short_enabled": True,       # Enable trend-following shorts
-        "description": "Bear: wider stops, minimal size, mostly sit out",
+        "shorting_enabled": True,
+        "description": "Bear: slight TP reduction, trend shorts enabled",
     },
     MarketRegime.SIDEWAYS: {
         "take_profit_multiplier": 1.0,     # Base TP
@@ -103,12 +104,12 @@ REGIME_ADJUSTMENTS: Dict[MarketRegime, Dict[str, Any]] = {
         "description": "Sideways: base params, EMA filter off (ranging)",
     },
     MarketRegime.UNKNOWN: {
-        "take_profit_multiplier": 0.9,
-        "stop_loss_multiplier": 1.3,       # Wider stops (unknown = volatile)
-        "position_scale_multiplier": 0.3,  # Very conservative until we know
-        "min_confirmations_offset": 3,     # Near-impossible longs (default cautious)
+        "take_profit_multiplier": 1.0,
+        "stop_loss_multiplier": 1.0,       # Normal stops
+        "position_scale_multiplier": 0.8,  # Slightly reduced
+        "min_confirmations_offset": 1,     # +1 extra confirmation
         "ema_filter_enabled": True,
-        "description": "Unknown: minimal exposure until regime is clear",
+        "description": "Unknown: near-normal with slight caution",
     },
 }
 

@@ -398,10 +398,11 @@ def main():
     with open("config/scalping.yaml") as f:
         config = yaml.safe_load(f)
 
-    data_dir = Path("data/q4_2024")
+    data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/q4_2024")
+    label = data_dir.name.upper().replace("_", " ")
 
     print("=" * 70)
-    print("  Q4 2024 BULL MARKET COMPARISON — OLD vs NEW Regime Settings")
+    print(f"  {label} COMPARISON — OLD vs NEW Regime Settings")
     print(f"  Data: {data_dir} | Capital: $10,000 per pair")
     print("=" * 70)
 
@@ -426,19 +427,19 @@ def main():
     )
 
     new_pnl = run_scenario(
-        "SCENARIO B: NEW Regime Settings (post-optimization + fast detection)",
+        "SCENARIO B: NEW Hybrid (structural improvements + permissive params)",
         REGIME_ADJUSTMENTS, new_regime_cfg,
-        use_cooldowns=True, config=config, data_dir=data_dir,
+        use_cooldowns=False, config=config, data_dir=data_dir,
     )
 
     print(f"\n{'=' * 70}")
     print(f"  COMPARISON SUMMARY")
-    print(f"  OLD (pre-optimization):  {'+'if old_pnl>0 else ''}${old_pnl:.2f}")
-    print(f"  NEW (post-optimization): {'+'if new_pnl>0 else ''}${new_pnl:.2f}")
+    print(f"  OLD (pre-optimization):       {'+'if old_pnl>0 else ''}${old_pnl:.2f}")
+    print(f"  NEW (hybrid):                 {'+'if new_pnl>0 else ''}${new_pnl:.2f}")
     diff = new_pnl - old_pnl
-    print(f"  Difference:              {'+'if diff>0 else ''}${diff:.2f}")
+    print(f"  Difference:                   {'+'if diff>0 else ''}${diff:.2f}")
     if old_pnl != 0:
-        print(f"  Change:                  {'+'if diff>0 else ''}{diff/abs(old_pnl)*100:.1f}%")
+        print(f"  Change:                       {'+'if diff>0 else ''}{diff/abs(old_pnl)*100:.1f}%")
     print(f"{'=' * 70}")
 
     return 0
