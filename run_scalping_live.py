@@ -136,8 +136,8 @@ class ScalpingTrader:
         # Regime detector - classifies bull/bear/sideways
         regime_cfg = self.config.get('regime_detector', {})
         self.regime_detector = RegimeDetector(RegimeConfig(
-            fast_sma_period=regime_cfg.get('fast_sma_period', 50),
-            slow_sma_period=regime_cfg.get('slow_sma_period', 200),
+            fast_sma_period=regime_cfg.get('fast_sma_period', 20),
+            slow_sma_period=regime_cfg.get('slow_sma_period', 100),
             bull_slope_threshold=regime_cfg.get('bull_slope_threshold', 0.02),
             bear_slope_threshold=regime_cfg.get('bear_slope_threshold', -0.02),
         ))
@@ -267,6 +267,8 @@ class ScalpingTrader:
                 if 'current_regime' in state:
                     try:
                         self._current_regime = MarketRegime(state['current_regime'])
+                        self._regime_adjustments = self.regime_detector.get_adjustments(self._current_regime)
+                        self._rebuild_strategies_for_regime(self._regime_adjustments)
                     except ValueError:
                         pass
                 self.indicator_snapshots = state.get('indicator_snapshots', {})
@@ -417,7 +419,7 @@ class ScalpingTrader:
         reference_pair = "BTC/USD"
         try:
             ohlc = self.client.get_ohlc(reference_pair, interval=self.candle_interval)
-            if not ohlc or len(ohlc) < 200:
+            if not ohlc or len(ohlc) < self.regime_detector.config.min_data_points:
                 return  # Not enough data yet
         except Exception as e:
             self.logger.error(f"Error fetching regime data: {e}")
@@ -772,19 +774,19 @@ class ScalpingTrader:
             )
 
             # Trailing stop takes priority over strategy signals
+            signal = strategy_instance.analyze(market_data, position)
+            self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
+
             if trailing_stop_hit:
                 exit_reason = f"Trailing stop hit at ${trailing_stop:.2f}"
                 self.logger.info(f"TRAILING STOP triggered for {pair}", trail_price=f"${trailing_stop:.2f}")
+                should_exit = True
+            elif pos_side == "long":
+                should_exit = signal.signal_type.value in ("sell", "close_long")
+                if should_exit:
+                    exit_reason = signal.reason
             else:
-                signal = strategy_instance.analyze(market_data, position)
-                self.logger.debug(f"{pair} signal: {signal.signal_type.value} - {signal.reason}")
-
-            should_exit = trailing_stop_hit
-            if not should_exit:
-                if pos_side == "long":
-                    should_exit = signal.signal_type.value in ("sell", "close_long")
-                else:
-                    should_exit = signal.signal_type.value == "close_short"
+                should_exit = signal.signal_type.value == "close_short"
                 if should_exit:
                     exit_reason = signal.reason
 
@@ -847,9 +849,6 @@ class ScalpingTrader:
                 else:
                     self.metrics['losses'] += 1
 
-                # Record trade in drawdown-based circuit breaker
-                self.circuit_breaker.record_trade(pair, pnl_usd)
-
                 self.logger.info(
                     f"CLOSED {pair}",
                     side=pos_side,
@@ -861,7 +860,6 @@ class ScalpingTrader:
                     pnl_usd=f"${pnl_usd:.2f}",
                     capital=f"${self.capital:.2f}",
                     regime=self._current_regime.value,
-                    circuit_breaker=self.circuit_breaker.get_state().state.value
                 )
 
                 del self.positions[pair]
@@ -918,6 +916,7 @@ class ScalpingTrader:
                     'best_price': fill_price,
                     'trailing_stop': 0.0,
                     'order_id': order_result.get('order_id', ''),
+                    'entry_fee': order_result.get('fee', 0.0),
                 }
 
                 self.logger.info(
