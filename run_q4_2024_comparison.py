@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Q1 2026 Backtest — validates scalping strategy against Q1 2026 data.
+Q4 2024 Bull Market Comparison — OLD vs NEW regime settings.
 
-Loads CSV data from data/q1_2026/, runs per-pair backtests using each
-pair's production config from config/scalping.yaml, and reports results.
+Runs the same strategy against Q4 2024 bull data with:
+1. OLD regime settings (pre-optimization)
+2. NEW regime settings (post-optimization + faster detection)
 """
 
 import csv
@@ -11,14 +12,50 @@ import sys
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from copy import deepcopy
 
 import yaml
 
 from src.exchange.kraken_client import OHLC
 from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.base_strategy import MarketData, Position
-from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS
+from src.strategy.regime_detector import (
+    RegimeDetector, RegimeConfig, MarketRegime, REGIME_ADJUSTMENTS,
+)
 from src.observability.logger import configure_logging
+
+
+# OLD regime adjustments (before our optimization)
+OLD_REGIME_ADJUSTMENTS = {
+    MarketRegime.BULL: {
+        "take_profit_multiplier": 1.3,
+        "stop_loss_multiplier": 1.0,
+        "position_scale_multiplier": 1.2,
+        "min_confirmations_offset": 0,
+        "ema_filter_enabled": True,
+    },
+    MarketRegime.BEAR: {
+        "take_profit_multiplier": 0.7,
+        "stop_loss_multiplier": 0.8,
+        "position_scale_multiplier": 0.5,
+        "min_confirmations_offset": 1,
+        "ema_filter_enabled": True,
+    },
+    MarketRegime.SIDEWAYS: {
+        "take_profit_multiplier": 1.0,
+        "stop_loss_multiplier": 1.0,
+        "position_scale_multiplier": 1.0,
+        "min_confirmations_offset": 0,
+        "ema_filter_enabled": False,
+    },
+    MarketRegime.UNKNOWN: {
+        "take_profit_multiplier": 1.0,
+        "stop_loss_multiplier": 1.0,
+        "position_scale_multiplier": 0.7,
+        "min_confirmations_offset": 1,
+        "ema_filter_enabled": True,
+    },
+}
 
 
 def load_csv_candles(filepath: str) -> list[OHLC]:
@@ -68,9 +105,9 @@ def build_scalping_config(default_cfg: dict, pair_params: dict, indicators: dict
     )
 
 
-def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
-                 capital: float = 10000.0, position_pct: float = 25.0,
-                 fee_pct: float = 0.16, slippage_pct: float = 0.05) -> dict:
+def run_backtest(pair, candles, strategy, regime_adjustments, regime_config,
+                 capital=10000.0, position_pct=25.0, fee_pct=0.16,
+                 slippage_pct=0.05, use_cooldowns=False) -> dict:
     lookback = 50
     trades = []
     peak_capital = capital
@@ -81,17 +118,16 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
     entry_time = None
     pos_size_usd = 0.0
     pos_side = "long"
-    cooldown_until = 0  # candle index after which trading is allowed
-    STOP_COOLDOWN = 12  # candles to wait after a stop loss (48h on 4h)
-    TP_COOLDOWN = 5     # candles to wait after a take profit (20h on 4h)
+    cooldown_until = 0
+    STOP_COOLDOWN = 12
+    TP_COOLDOWN = 5
     consecutive_losses = 0
-    LOSS_STREAK_PAUSE = 30  # 5 day pause after 3 consecutive losses
+    LOSS_STREAK_PAUSE = 30
 
-    regime_detector = RegimeDetector(RegimeConfig(
-        bull_slope_threshold=0.02, bear_slope_threshold=-0.02
-    ))
+    regime_detector = RegimeDetector(regime_config)
     current_regime = MarketRegime.UNKNOWN
-    position_scale = 1.0  # regime-adjusted position scale
+    position_scale = 1.0
+
     base_config = ScalpingConfig(
         take_profit_percent=strategy.config.take_profit_percent,
         stop_loss_percent=strategy.config.stop_loss_percent,
@@ -119,80 +155,66 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
         short_min_confirmations=strategy.config.short_min_confirmations,
     )
 
-    # Apply initial UNKNOWN regime adjustments immediately
-    init_adj = REGIME_ADJUSTMENTS[MarketRegime.UNKNOWN]
+    min_dp = regime_config.min_data_points
+
+    # Apply initial UNKNOWN adjustments
+    init_adj = regime_adjustments.get(MarketRegime.UNKNOWN, {})
     tp_m = init_adj.get('take_profit_multiplier', 1.0)
     sl_m = init_adj.get('stop_loss_multiplier', 1.0)
     conf_off = init_adj.get('min_confirmations_offset', 0)
-    s_conf_off = init_adj.get('short_confirmations_offset', 0)
     position_scale = init_adj.get('position_scale_multiplier', 1.0)
-    from src.strategy.scalping_strategy import ScalpingConfig as SC
-    strategy = ScalpingStrategy(SC(
+    strategy = ScalpingStrategy(ScalpingConfig(
         take_profit_percent=base_config.take_profit_percent * tp_m,
         stop_loss_percent=base_config.stop_loss_percent * sl_m,
         min_confirmations=max(1, base_config.min_confirmations + conf_off),
-        rsi_period=base_config.rsi_period,
-        rsi_oversold=base_config.rsi_oversold,
-        rsi_overbought=base_config.rsi_overbought,
-        bb_period=base_config.bb_period,
+        rsi_period=base_config.rsi_period, rsi_oversold=base_config.rsi_oversold,
+        rsi_overbought=base_config.rsi_overbought, bb_period=base_config.bb_period,
         bb_std_dev=base_config.bb_std_dev,
         vwap_threshold_percent=base_config.vwap_threshold_percent,
         volume_spike_threshold=base_config.volume_spike_threshold,
-        stoch_k_period=base_config.stoch_k_period,
-        stoch_d_period=base_config.stoch_d_period,
-        stoch_oversold=base_config.stoch_oversold,
-        stoch_overbought=base_config.stoch_overbought,
-        macd_fast=base_config.macd_fast,
-        macd_slow=base_config.macd_slow,
+        stoch_k_period=base_config.stoch_k_period, stoch_d_period=base_config.stoch_d_period,
+        stoch_oversold=base_config.stoch_oversold, stoch_overbought=base_config.stoch_overbought,
+        macd_fast=base_config.macd_fast, macd_slow=base_config.macd_slow,
         macd_signal=base_config.macd_signal,
-        atr_period=base_config.atr_period,
-        atr_stop_multiplier=base_config.atr_stop_multiplier,
-        atr_tp_multiplier=base_config.atr_tp_multiplier,
-        use_atr_stops=base_config.use_atr_stops,
+        atr_period=base_config.atr_period, atr_stop_multiplier=base_config.atr_stop_multiplier,
+        atr_tp_multiplier=base_config.atr_tp_multiplier, use_atr_stops=base_config.use_atr_stops,
         fee_percent=fee_pct,
         ema_filter_enabled=init_adj.get('ema_filter_enabled', True),
         shorting_enabled=init_adj.get('shorting_enabled', base_config.shorting_enabled),
-        short_min_confirmations=max(1, base_config.short_min_confirmations + s_conf_off),
+        short_min_confirmations=base_config.short_min_confirmations,
         trend_short_enabled=init_adj.get('trend_short_enabled', False),
     ))
 
     for i in range(lookback, len(candles)):
-        if i % 20 == 0 and i >= 100:
+        if i % 20 == 0 and i >= min_dp:
             closes = [c.close for c in candles[:i+1]]
             highs = [c.high for c in candles[:i+1]]
             lows = [c.low for c in candles[:i+1]]
             result = regime_detector.detect(closes, highs, lows)
             if result.regime != current_regime:
                 current_regime = result.regime
-                adj = REGIME_ADJUSTMENTS.get(result.regime, REGIME_ADJUSTMENTS[MarketRegime.UNKNOWN])
+                adj = regime_adjustments.get(result.regime,
+                          regime_adjustments.get(MarketRegime.UNKNOWN, {}))
                 tp_m = adj.get('take_profit_multiplier', 1.0)
                 sl_m = adj.get('stop_loss_multiplier', 1.0)
                 conf_off = adj.get('min_confirmations_offset', 0)
                 s_conf_off = adj.get('short_confirmations_offset', 0)
                 position_scale = adj.get('position_scale_multiplier', 1.0)
-                from src.strategy.scalping_strategy import ScalpingConfig as SC
-                strategy = ScalpingStrategy(SC(
+                strategy = ScalpingStrategy(ScalpingConfig(
                     take_profit_percent=base_config.take_profit_percent * tp_m,
                     stop_loss_percent=base_config.stop_loss_percent * sl_m,
                     min_confirmations=max(1, base_config.min_confirmations + conf_off),
-                    rsi_period=base_config.rsi_period,
-                    rsi_oversold=base_config.rsi_oversold,
-                    rsi_overbought=base_config.rsi_overbought,
-                    bb_period=base_config.bb_period,
+                    rsi_period=base_config.rsi_period, rsi_oversold=base_config.rsi_oversold,
+                    rsi_overbought=base_config.rsi_overbought, bb_period=base_config.bb_period,
                     bb_std_dev=base_config.bb_std_dev,
                     vwap_threshold_percent=base_config.vwap_threshold_percent,
                     volume_spike_threshold=base_config.volume_spike_threshold,
-                    stoch_k_period=base_config.stoch_k_period,
-                    stoch_d_period=base_config.stoch_d_period,
-                    stoch_oversold=base_config.stoch_oversold,
-                    stoch_overbought=base_config.stoch_overbought,
-                    macd_fast=base_config.macd_fast,
-                    macd_slow=base_config.macd_slow,
+                    stoch_k_period=base_config.stoch_k_period, stoch_d_period=base_config.stoch_d_period,
+                    stoch_oversold=base_config.stoch_oversold, stoch_overbought=base_config.stoch_overbought,
+                    macd_fast=base_config.macd_fast, macd_slow=base_config.macd_slow,
                     macd_signal=base_config.macd_signal,
-                    atr_period=base_config.atr_period,
-                    atr_stop_multiplier=base_config.atr_stop_multiplier,
-                    atr_tp_multiplier=base_config.atr_tp_multiplier,
-                    use_atr_stops=base_config.use_atr_stops,
+                    atr_period=base_config.atr_period, atr_stop_multiplier=base_config.atr_stop_multiplier,
+                    atr_tp_multiplier=base_config.atr_tp_multiplier, use_atr_stops=base_config.use_atr_stops,
                     fee_percent=fee_pct,
                     ema_filter_enabled=adj.get('ema_filter_enabled', True),
                     shorting_enabled=adj.get('shorting_enabled', base_config.shorting_enabled),
@@ -208,7 +230,6 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
                         ticker=None)
 
         if in_position:
-            # Intra-candle stop: floor at 2.5% (crypto noise), cap at 8%
             stop_pct_abs = max(strategy.config.stop_loss_percent, 2.5)
             stop_pct_abs = min(stop_pct_abs, 8.0)
             intra_stopped = False
@@ -225,25 +246,19 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
                     gross_pnl = ((entry_price - intra_exit_price) / entry_price) * 100
                 else:
                     gross_pnl = ((intra_exit_price - entry_price) / entry_price) * 100
-                exit_price = intra_exit_price
-                reason = f"Intra-candle stop: {gross_pnl - (fee_pct * 2):.2f}%"
                 net_pnl = gross_pnl - (fee_pct * 2)
                 pnl_usd = pos_size_usd * (net_pnl / 100)
                 capital += pnl_usd
                 peak_capital = max(peak_capital, capital)
                 dd = (peak_capital - capital) / peak_capital * 100
                 max_drawdown = max(max_drawdown, dd)
-                trades.append({
-                    'entry_time': entry_time.isoformat(),
-                    'exit_time': current.timestamp.isoformat(),
-                    'side': pos_side, 'entry_price': entry_price,
-                    'exit_price': exit_price, 'pnl_pct': round(net_pnl, 3),
-                    'pnl_usd': round(pnl_usd, 2), 'reason': reason,
-                })
+                trades.append({'side': pos_side, 'pnl_pct': round(net_pnl, 3),
+                               'pnl_usd': round(pnl_usd, 2), 'reason': 'intra-candle stop'})
                 in_position = False
-                consecutive_losses += 1
-                pause = LOSS_STREAK_PAUSE if consecutive_losses >= 3 else STOP_COOLDOWN
-                cooldown_until = i + pause
+                if use_cooldowns:
+                    consecutive_losses += 1
+                    pause = LOSS_STREAK_PAUSE if consecutive_losses >= 3 else STOP_COOLDOWN
+                    cooldown_until = i + pause
                 continue
 
             position = Position(pair=pair, side=pos_side, entry_price=entry_price,
@@ -266,27 +281,19 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
                 peak_capital = max(peak_capital, capital)
                 dd = (peak_capital - capital) / peak_capital * 100
                 max_drawdown = max(max_drawdown, dd)
-
-                trades.append({
-                    'entry_time': entry_time.isoformat(),
-                    'exit_time': current.timestamp.isoformat(),
-                    'side': pos_side,
-                    'entry_price': entry_price,
-                    'exit_price': exit_price,
-                    'pnl_pct': round(net_pnl, 3),
-                    'pnl_usd': round(pnl_usd, 2),
-                    'reason': signal.reason[:80],
-                })
+                trades.append({'side': pos_side, 'pnl_pct': round(net_pnl, 3),
+                               'pnl_usd': round(pnl_usd, 2), 'reason': signal.reason[:60]})
                 in_position = False
-                if net_pnl > 0:
-                    consecutive_losses = 0
-                    cooldown_until = i + TP_COOLDOWN
-                else:
-                    consecutive_losses += 1
-                    pause = LOSS_STREAK_PAUSE if consecutive_losses >= 3 else STOP_COOLDOWN
-                    cooldown_until = i + pause
+                if use_cooldowns:
+                    if net_pnl > 0:
+                        consecutive_losses = 0
+                        cooldown_until = i + TP_COOLDOWN
+                    else:
+                        consecutive_losses += 1
+                        pause = LOSS_STREAK_PAUSE if consecutive_losses >= 3 else STOP_COOLDOWN
+                        cooldown_until = i + pause
         else:
-            if i < cooldown_until:
+            if use_cooldowns and i < cooldown_until:
                 continue
             signal = strategy.analyze(md, None)
             scaled_pct = position_pct * position_scale
@@ -304,35 +311,20 @@ def run_backtest(pair: str, candles: list[OHLC], strategy: ScalpingStrategy,
                 in_position = True
 
     wins = [t for t in trades if t['pnl_pct'] > 0]
-    losses = [t for t in trades if t['pnl_pct'] <= 0]
-    gross_profit = sum(t['pnl_usd'] for t in wins)
-    gross_loss = abs(sum(t['pnl_usd'] for t in losses))
     total_pnl = sum(t['pnl_usd'] for t in trades)
-    pf = gross_profit / gross_loss if gross_loss > 0 else float('inf')
     wr = len(wins) / len(trades) * 100 if trades else 0
 
     return {
-        'pair': pair,
-        'trades': len(trades),
-        'wins': len(wins),
-        'losses': len(losses),
+        'pair': pair, 'trades': len(trades), 'wins': len(wins),
         'win_rate': round(wr, 1),
         'total_pnl_usd': round(total_pnl, 2),
         'total_pnl_pct': round((capital - 10000) / 10000 * 100, 2),
-        'profit_factor': round(pf, 2),
         'max_drawdown_pct': round(max_drawdown, 2),
-        'final_capital': round(capital, 2),
-        'trade_details': trades,
         'regime': current_regime.value,
     }
 
 
-def main():
-    configure_logging(level="WARNING", format_type="json")
-
-    with open("config/scalping.yaml") as f:
-        config = yaml.safe_load(f)
-
+def run_scenario(label, regime_adj, regime_cfg, use_cooldowns, config, data_dir):
     strategy_cfg = config.get('strategy', {})
     indicators = config.get('indicators', {})
     pair_params = config.get('pair_parameters', {})
@@ -340,24 +332,17 @@ def main():
     position_pct = config.get('position', {}).get('size_percent', 25.0)
     fee_pct = config.get('fees', {}).get('maker_percent', 0.16)
 
-    data_dir = Path("data/q1_2026")
-
-    print("=" * 80)
-    print("  Q1 2026 BACKTEST — SCALPING STRATEGY (Current Production Config)")
-    print("=" * 80)
-    print(f"  Capital: $10,000 | Position: {position_pct}% | Fee: {fee_pct}%")
-    print(f"  Data: {data_dir}")
-    print("=" * 80)
+    print(f"\n{'=' * 70}")
+    print(f"  {label}")
+    print(f"{'=' * 70}")
 
     results = []
-    portfolio_capital = 10000.0
     portfolio_pnl = 0.0
 
     for pair in pairs:
         fname = pair.replace("/", "_") + "_4h.csv"
         fpath = data_dir / fname
         if not fpath.exists():
-            print(f"\n  {pair}: NO DATA FILE ({fpath})")
             continue
 
         candles = load_csv_candles(str(fpath))
@@ -367,58 +352,96 @@ def main():
 
         interval = pp.get('candle_interval', strategy_cfg.get('candle_interval', 240))
         if interval == 720:
-            agg_candles = []
+            agg = []
             for j in range(0, len(candles) - 2, 3):
                 group = candles[j:j+3]
-                agg_candles.append(OHLC(
+                agg.append(OHLC(
                     timestamp=group[0].timestamp,
                     open=group[0].open,
                     high=max(c.high for c in group),
                     low=min(c.low for c in group),
                     close=group[-1].close,
                     vwap=sum(c.vwap * c.volume for c in group) / max(sum(c.volume for c in group), 1e-10),
-                    volume=sum(c.volume for c in group),
-                    count=0
+                    volume=sum(c.volume for c in group), count=0
                 ))
-            candles = agg_candles
+            candles = agg
 
-        result = run_backtest(pair, candles, strategy,
+        result = run_backtest(pair, candles, strategy, regime_adj, regime_cfg,
                               capital=10000.0, position_pct=position_pct,
-                              fee_pct=fee_pct)
+                              fee_pct=fee_pct, use_cooldowns=use_cooldowns)
         results.append(result)
         portfolio_pnl += result['total_pnl_usd']
 
-        status = "+" if result['total_pnl_usd'] > 0 else ""
-        print(f"\n  {pair:12s}  {result['trades']:3d} trades  "
+        s = "+" if result['total_pnl_usd'] > 0 else ""
+        print(f"  {pair:12s}  {result['trades']:3d} trades  "
               f"WR {result['win_rate']:5.1f}%  "
-              f"PF {result['profit_factor']:5.2f}  "
-              f"P&L {status}${result['total_pnl_usd']:8.2f}  "
-              f"({status}{result['total_pnl_pct']:6.2f}%)  "
-              f"DD {result['max_drawdown_pct']:5.2f}%  "
-              f"[{result['regime']}]")
+              f"P&L {s}${result['total_pnl_usd']:8.2f}  "
+              f"({s}{result['total_pnl_pct']:6.2f}%)  "
+              f"DD {result['max_drawdown_pct']:5.2f}%  [{result['regime']}]")
 
-        for t in result['trade_details'][:3]:
-            print(f"    {t['side']:5s} ${t['entry_price']:.4f} -> ${t['exit_price']:.4f}  "
-                  f"{'+' if t['pnl_pct'] > 0 else ''}{t['pnl_pct']:.2f}%  {t['reason'][:50]}")
-        if len(result['trade_details']) > 3:
-            print(f"    ... {len(result['trade_details']) - 3} more trades")
-
-    print("\n" + "=" * 80)
     total_trades = sum(r['trades'] for r in results)
     total_wins = sum(r['wins'] for r in results)
     profitable_pairs = sum(1 for r in results if r['total_pnl_usd'] > 0)
-    print(f"  PORTFOLIO SUMMARY")
-    print(f"  Total Trades: {total_trades}")
-    print(f"  Total Wins: {total_wins} ({total_wins/total_trades*100:.1f}% WR)" if total_trades else "  No trades")
-    print(f"  Profitable Pairs: {profitable_pairs}/{len(results)}")
-    print(f"  Portfolio P&L: {'+'if portfolio_pnl > 0 else ''}${portfolio_pnl:.2f}")
-    print("=" * 80)
+    print(f"\n  TOTAL: {total_trades} trades, "
+          f"{total_wins} wins ({total_wins/total_trades*100:.1f}% WR), " if total_trades else "")
+    print(f"  Profitable: {profitable_pairs}/{len(results)} pairs")
+    s = "+" if portfolio_pnl > 0 else ""
+    print(f"  Portfolio P&L: {s}${portfolio_pnl:.2f}")
+    print(f"{'=' * 70}")
 
-    with open("data/q1_2026/backtest_results.json", "w") as f:
-        json.dump(results, f, indent=2, default=str)
-    print(f"\n  Detailed results saved to data/q1_2026/backtest_results.json")
+    return portfolio_pnl
 
-    return 0 if portfolio_pnl > 0 else 1
+
+def main():
+    configure_logging(level="WARNING", format_type="json")
+
+    with open("config/scalping.yaml") as f:
+        config = yaml.safe_load(f)
+
+    data_dir = Path("data/q4_2024")
+
+    print("=" * 70)
+    print("  Q4 2024 BULL MARKET COMPARISON — OLD vs NEW Regime Settings")
+    print(f"  Data: {data_dir} | Capital: $10,000 per pair")
+    print("=" * 70)
+
+    # OLD settings: slow regime detection (50/200 SMA, 200 min data points)
+    old_regime_cfg = RegimeConfig(
+        fast_sma_period=50, slow_sma_period=200,
+        min_data_points=200,
+        bull_slope_threshold=0.02, bear_slope_threshold=-0.02,
+    )
+
+    # NEW settings: fast regime detection (20/100 SMA, 100 min data points)
+    new_regime_cfg = RegimeConfig(
+        fast_sma_period=20, slow_sma_period=100,
+        min_data_points=100,
+        bull_slope_threshold=0.02, bear_slope_threshold=-0.02,
+    )
+
+    old_pnl = run_scenario(
+        "SCENARIO A: OLD Regime Settings (pre-optimization)",
+        OLD_REGIME_ADJUSTMENTS, old_regime_cfg,
+        use_cooldowns=False, config=config, data_dir=data_dir,
+    )
+
+    new_pnl = run_scenario(
+        "SCENARIO B: NEW Regime Settings (post-optimization + fast detection)",
+        REGIME_ADJUSTMENTS, new_regime_cfg,
+        use_cooldowns=True, config=config, data_dir=data_dir,
+    )
+
+    print(f"\n{'=' * 70}")
+    print(f"  COMPARISON SUMMARY")
+    print(f"  OLD (pre-optimization):  {'+'if old_pnl>0 else ''}${old_pnl:.2f}")
+    print(f"  NEW (post-optimization): {'+'if new_pnl>0 else ''}${new_pnl:.2f}")
+    diff = new_pnl - old_pnl
+    print(f"  Difference:              {'+'if diff>0 else ''}${diff:.2f}")
+    if old_pnl != 0:
+        print(f"  Change:                  {'+'if diff>0 else ''}{diff/abs(old_pnl)*100:.1f}%")
+    print(f"{'=' * 70}")
+
+    return 0
 
 
 if __name__ == "__main__":

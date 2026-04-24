@@ -38,8 +38,8 @@ class MarketRegime(Enum):
 class RegimeConfig:
     """Configuration for regime detection."""
     # SMA periods
-    fast_sma_period: int = 50      # For slope calculation
-    slow_sma_period: int = 200     # For trend confirmation
+    fast_sma_period: int = 20      # For slope calculation (was 50 — faster detection)
+    slow_sma_period: int = 100     # For trend confirmation (was 200 — faster warmup)
 
     # Slope thresholds (% change per period)
     # Lowered from 0.05 to 0.02 — old thresholds were too aggressive and
@@ -55,7 +55,7 @@ class RegimeConfig:
     slope_lookback: int = 10  # periods to measure SMA slope
 
     # Minimum data points needed
-    min_data_points: int = 200
+    min_data_points: int = 100  # was 200 — detect regime in ~17 days on 4h candles
 
 
 @dataclass
