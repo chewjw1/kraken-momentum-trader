@@ -320,10 +320,10 @@ pair_parameters:
 # Adaptive pair management — more aggressive re-engagement
 adaptive:
   enabled: true
-  min_win_rate: 0.38        # 0.35→0.38: slightly higher bar to disable bad pairs
-  min_profit_factor: 0.90   # 0.85→0.90: require near-breakeven minimum
-  max_consecutive_losses: 3
-  cooldown_hours: 1.5       # 2.0→1.5: re-engage faster after cooldown
+  min_win_rate: 0.15        # Strategy WR is ~30%, don't disable above 15%
+  min_profit_factor: 0.3    # Only disable truly terrible pairs
+  max_consecutive_losses: 8  # 3 was too aggressive for a 30% WR strategy
+  cooldown_hours: 1.0
   reenable_win_rate: 0.45   # 0.50→0.45: lower bar to re-enable (more trading time)
 
 # Position sizing — optimized for max returns with confidence scaling

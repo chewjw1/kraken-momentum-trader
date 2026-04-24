@@ -143,6 +143,8 @@ class ScalpingTrader:
         ))
         self._current_regime = MarketRegime.UNKNOWN
         self._regime_adjustments: Dict[str, float] = {}
+        self._regime_check_counter = 0
+        self._regime_check_interval = 20  # Only check regime every 20 cycles
 
         # Trailing stops (disabled by default — params optimized without them)
         ts_cfg = self.config.get('trailing_stops', {})
@@ -415,6 +417,12 @@ class ScalpingTrader:
         based on the detected regime. Rebuilds strategy instances when the
         regime changes.
         """
+        # Only check regime every N cycles to avoid whipsawing
+        self._regime_check_counter += 1
+        if self._regime_check_counter < self._regime_check_interval:
+            return
+        self._regime_check_counter = 0
+
         # Use BTC as regime reference (largest, most liquid)
         reference_pair = "BTC/USD"
         try:
