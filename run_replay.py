@@ -235,17 +235,20 @@ def main():
             print(f"  {i:>7} | {current_date:>10} | {regime_after.value:>10} | {len(positions_after):>10} | ${capital_after:>11.2f} | {event}")
 
     # Final summary
-    total_pnl = trader.capital - 10000.0
+    initial = trader.initial_capital
+    total_pnl = trader.capital - initial
     total_trades = trader.metrics['total_trades']
     wins = trader.metrics['wins']
     losses = trader.metrics['losses']
     wr = (wins / total_trades * 100) if total_trades > 0 else 0
+    pnl_pct = (total_pnl / initial * 100) if initial > 0 else 0
 
     print(f"\n{'='*70}")
     print(f"  REPLAY RESULTS")
     print(f"{'='*70}")
+    print(f"  Initial capital:  ${initial:,.2f}")
     print(f"  Final capital:    ${trader.capital:,.2f}")
-    print(f"  Total P&L:        ${total_pnl:+,.2f} ({total_pnl/100:+.2f}%)")
+    print(f"  Total P&L:        ${total_pnl:+,.2f} ({pnl_pct:+.2f}%)")
     print(f"  Trades:           {total_trades} ({wins}W / {losses}L, {wr:.1f}% WR)")
     print(f"  Open positions:   {len(trader.positions)}")
     print(f"  Final regime:     {trader._current_regime.value}")
@@ -303,9 +306,9 @@ def main():
             anomalies.append(f"  WARN: {pair} still open at end of replay")
 
     # Check capital sanity
-    if trader.capital < 5000:
+    if trader.capital < initial * 0.5:
         anomalies.append(f"  WARN: Capital dropped below 50% (${trader.capital:.2f})")
-    if trader.capital > 20000:
+    if trader.capital > initial * 2:
         anomalies.append(f"  WARN: Capital more than doubled (${trader.capital:.2f}) — suspiciously high")
 
     if anomalies:

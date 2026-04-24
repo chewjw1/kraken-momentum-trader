@@ -69,12 +69,46 @@ class ScalpingTrader:
         use_maker = self.config.get('execution', {}).get('use_maker_orders', True)
         fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if use_maker else self.config.get('fees', {}).get('taker_percent', 0.26)
 
-        # Default strategy config (used if per-pair not specified)
+        # Read indicators section as defaults (matches backtest config construction)
+        ind = self.config.get('indicators', {})
+        rsi_cfg = ind.get('rsi', {})
+        stoch_cfg = ind.get('stochastic', {})
+        bb_cfg = ind.get('bollinger', {})
+        macd_cfg = ind.get('macd', {})
+        obv_cfg = ind.get('obv', {})
+        atr_cfg = ind.get('atr', {})
+        vwap_cfg = ind.get('vwap', {})
+        vol_cfg = ind.get('volume', {})
+        shorting_cfg = self.config.get('shorting', {})
+
+        # Default strategy config built from indicators section + strategy section
         default_config = ScalpingConfig(
             take_profit_percent=self.config.get('strategy', {}).get('take_profit_percent', 5.0),
             stop_loss_percent=self.config.get('strategy', {}).get('stop_loss_percent', 2.5),
             min_confirmations=self.config.get('strategy', {}).get('min_confirmations', 3),
-            fee_percent=fee_rate
+            fee_percent=fee_rate,
+            rsi_period=rsi_cfg.get('period', 10),
+            rsi_oversold=rsi_cfg.get('oversold', 28.0),
+            rsi_overbought=rsi_cfg.get('overbought', 70.0),
+            stoch_k_period=stoch_cfg.get('k_period', 13),
+            stoch_d_period=stoch_cfg.get('d_period', 3),
+            stoch_oversold=stoch_cfg.get('oversold', 23.0),
+            stoch_overbought=stoch_cfg.get('overbought', 75.0),
+            bb_period=bb_cfg.get('period', 20),
+            bb_std_dev=bb_cfg.get('std_dev', 2.0),
+            bb_squeeze_threshold=bb_cfg.get('squeeze_threshold', 3.0),
+            macd_fast=macd_cfg.get('fast_period', 12),
+            macd_slow=macd_cfg.get('slow_period', 26),
+            macd_signal=macd_cfg.get('signal_period', 9),
+            obv_sma_period=obv_cfg.get('sma_period', 20),
+            atr_period=atr_cfg.get('period', 14),
+            atr_stop_multiplier=atr_cfg.get('stop_multiplier', 2.5),
+            atr_tp_multiplier=atr_cfg.get('tp_multiplier', 2.75),
+            use_atr_stops=atr_cfg.get('use_dynamic_stops', True),
+            vwap_threshold_percent=vwap_cfg.get('threshold_percent', 0.5),
+            volume_spike_threshold=vol_cfg.get('spike_threshold', 1.5),
+            shorting_enabled=shorting_cfg.get('enabled', True),
+            short_min_confirmations=shorting_cfg.get('min_confirmations', 3),
         )
         self.strategy = ScalpingStrategy(default_config)
 
@@ -90,6 +124,7 @@ class ScalpingTrader:
                 rsi_overbought=params.get('rsi_overbought', default_config.rsi_overbought),
                 bb_period=params.get('bb_period', default_config.bb_period),
                 bb_std_dev=params.get('bb_std_dev', default_config.bb_std_dev),
+                bb_squeeze_threshold=params.get('bb_squeeze_threshold', default_config.bb_squeeze_threshold),
                 vwap_threshold_percent=params.get('vwap_threshold_percent', default_config.vwap_threshold_percent),
                 volume_spike_threshold=params.get('volume_spike_threshold', default_config.volume_spike_threshold),
                 min_confirmations=params.get('min_confirmations', default_config.min_confirmations),
@@ -98,9 +133,14 @@ class ScalpingTrader:
                 stoch_d_period=params.get('stoch_d_period', default_config.stoch_d_period),
                 stoch_oversold=params.get('stoch_oversold', default_config.stoch_oversold),
                 stoch_overbought=params.get('stoch_overbought', default_config.stoch_overbought),
+                macd_fast=params.get('macd_fast', default_config.macd_fast),
+                macd_slow=params.get('macd_slow', default_config.macd_slow),
+                macd_signal=params.get('macd_signal', default_config.macd_signal),
+                obv_sma_period=params.get('obv_sma_period', default_config.obv_sma_period),
                 atr_period=params.get('atr_period', default_config.atr_period),
                 atr_stop_multiplier=params.get('atr_stop_multiplier', default_config.atr_stop_multiplier),
                 atr_tp_multiplier=params.get('atr_tp_multiplier', default_config.atr_tp_multiplier),
+                use_atr_stops=params.get('use_atr_stops', default_config.use_atr_stops),
                 shorting_enabled=params.get('shorting_enabled', default_config.shorting_enabled),
                 short_min_confirmations=params.get('short_min_confirmations', default_config.short_min_confirmations),
             )
@@ -111,7 +151,8 @@ class ScalpingTrader:
             min_profit_factor=self.config.get('adaptive', {}).get('min_profit_factor', 0.7),
             max_consecutive_losses=self.config.get('adaptive', {}).get('max_consecutive_losses', 5),
             cooldown_hours=self.config.get('adaptive', {}).get('cooldown_hours', 2.0),
-            reenable_win_rate=self.config.get('adaptive', {}).get('reenable_win_rate', 0.45)
+            reenable_win_rate=self.config.get('adaptive', {}).get('reenable_win_rate', 0.45),
+            confidence_scaling=False,
         )
         self.pair_manager = AdaptivePairManager(adaptive_config)
 
@@ -517,16 +558,20 @@ class ScalpingTrader:
                 rsi_overbought=params.get('rsi_overbought', base.rsi_overbought),
                 bb_period=params.get('bb_period', base.bb_period),
                 bb_std_dev=params.get('bb_std_dev', base.bb_std_dev),
+                bb_squeeze_threshold=params.get('bb_squeeze_threshold', base.bb_squeeze_threshold),
                 vwap_threshold_percent=params.get('vwap_threshold_percent', base.vwap_threshold_percent),
                 volume_spike_threshold=params.get('volume_spike_threshold', base.volume_spike_threshold),
                 min_confirmations=max(1, base_conf + conf_offset),
                 fee_percent=fee_rate,
                 ema_filter_enabled=ema_enabled,
-                # New indicator params from per-pair config or base
                 stoch_k_period=params.get('stoch_k_period', base.stoch_k_period),
                 stoch_d_period=params.get('stoch_d_period', base.stoch_d_period),
                 stoch_oversold=params.get('stoch_oversold', base.stoch_oversold),
                 stoch_overbought=params.get('stoch_overbought', base.stoch_overbought),
+                macd_fast=params.get('macd_fast', base.macd_fast),
+                macd_slow=params.get('macd_slow', base.macd_slow),
+                macd_signal=params.get('macd_signal', base.macd_signal),
+                obv_sma_period=params.get('obv_sma_period', base.obv_sma_period),
                 atr_period=params.get('atr_period', base.atr_period),
                 atr_stop_multiplier=params.get('atr_stop_multiplier', base.atr_stop_multiplier),
                 atr_tp_multiplier=params.get('atr_tp_multiplier', base.atr_tp_multiplier),
@@ -599,7 +644,8 @@ class ScalpingTrader:
         """
         Place an exit order on Kraken.
 
-        Always uses market orders for exits to guarantee fill.
+        Uses maker orders when configured for lower fees (0.16% vs 0.26%).
+        Falls back to market order if maker order fails.
 
         Returns:
             dict with order details, or None if order failed.
@@ -607,12 +653,20 @@ class ScalpingTrader:
         # To close: sell if long, buy if short
         order_side = OrderSide.SELL if side == "long" else OrderSide.BUY
         try:
-            order = self.client.place_order(
-                pair=pair,
-                side=order_side,
-                order_type=OrderType.MARKET,
-                volume=size,
-            )
+            if self.use_maker_orders:
+                order = self.client.place_maker_order(
+                    pair=pair,
+                    side=order_side,
+                    volume=size,
+                    price_offset_percent=self.maker_price_offset,
+                )
+            else:
+                order = self.client.place_order(
+                    pair=pair,
+                    side=order_side,
+                    order_type=OrderType.MARKET,
+                    volume=size,
+                )
 
             self.logger.info(
                 f"EXIT ORDER PLACED for {pair}",

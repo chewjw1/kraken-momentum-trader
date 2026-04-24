@@ -326,13 +326,13 @@ adaptive:
   cooldown_hours: 1.0
   reenable_win_rate: 0.45   # 0.50→0.45: lower bar to re-enable (more trading time)
 
-# Position sizing — optimized for max returns with confidence scaling
+# Position sizing — optimized for shared-capital replay (10 pairs, $10k)
 position:
   initial_capital: 10000.0
-  size_percent: 25.0        # Sweep-validated: best P&L at 25%, drops sharply above 30%
-  confidence_scaling: true
-  min_scale: 0.6            # 0.5→0.6: don't go too small on low-confidence trades
-  max_scale: 1.8            # 1.5→1.8: go bigger on high-confidence signals
+  size_percent: 20.0        # 20% optimal for shared capital (allows 5 concurrent positions)
+  confidence_scaling: false  # Disabled: low WR causes scaling to 0.5x, compounding losses
+  min_scale: 0.6
+  max_scale: 1.8
 
 # Fees
 fees:
