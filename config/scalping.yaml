@@ -355,8 +355,8 @@ circuit_breaker:
 
 # Regime detector
 regime_detector:
-  fast_sma_period: 50
-  slow_sma_period: 200
+  fast_sma_period: 20
+  slow_sma_period: 100
   bull_slope_threshold: 0.02
   bear_slope_threshold: -0.02
 
