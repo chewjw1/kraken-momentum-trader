@@ -868,27 +868,6 @@ class ScalpingTrader:
                 self._save_state()
 
         else:
-            # Check global circuit breaker
-            if not self.circuit_breaker.is_trading_allowed():
-                cb_state = self.circuit_breaker.get_state()
-                remaining = self.circuit_breaker.time_until_ready()
-                self.logger.warning(
-                    f"Circuit breaker OPEN - skipping {pair} entry",
-                    state=cb_state.state.value,
-                    reason=cb_state.trigger_reason,
-                    time_remaining=str(remaining) if remaining else "manual reset needed"
-                )
-                return
-
-            # Check per-pair circuit breaker
-            if not self.circuit_breaker.is_pair_allowed(pair):
-                ps = self.circuit_breaker.get_pair_state(pair)
-                self.logger.warning(
-                    f"Pair {pair} paused by circuit breaker",
-                    reason=ps.pause_reason if ps else "unknown"
-                )
-                return
-
             # Look for entry
             strategy = self._get_strategy_for_pair(pair)
             signal = strategy.analyze(market_data, None)
@@ -974,9 +953,6 @@ class ScalpingTrader:
                         f"Re-enabled {len(reenabled)} pairs after cooldown",
                         pairs=reenabled
                     )
-
-                # Update circuit breaker equity tracking
-                self.circuit_breaker.update_equity(self.capital)
 
                 for pair in self.pairs:
                     try:
