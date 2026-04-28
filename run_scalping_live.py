@@ -32,7 +32,7 @@ from src.strategy.scalping_strategy import ScalpingStrategy, ScalpingConfig
 from src.strategy.base_strategy import MarketData, Position
 from src.strategy.regime_detector import RegimeDetector, RegimeConfig, MarketRegime
 from src.core.adaptive_pair_manager import AdaptivePairManager, AdaptiveConfig
-from src.risk.circuit_breaker import CircuitBreaker
+
 from src.observability.logger import configure_logging, get_logger
 
 
@@ -162,17 +162,6 @@ class ScalpingTrader:
         self.capital = self._fetch_initial_capital()
         self.initial_capital = self.capital
         self.position_size_pct = self.config.get('position', {}).get('size_percent', 20.0)
-
-        # Circuit breaker - drawdown-based (per-pair + global)
-        cb_config = self.config.get('circuit_breaker', {})
-        self.circuit_breaker = CircuitBreaker(
-            global_max_drawdown_pct=cb_config.get('global_max_drawdown_pct', 5.0),
-            cooldown_hours=cb_config.get('cooldown_hours', 4),
-            pair_max_drawdown_pct=cb_config.get('pair_max_drawdown_pct', 3.0),
-            pair_cooldown_hours=cb_config.get('pair_cooldown_hours', 2.0),
-            consecutive_loss_limit=cb_config.get('consecutive_loss_limit', 5),
-            initial_capital=self.initial_capital,
-        )
 
         # Regime detector - classifies bull/bear/sideways
         regime_cfg = self.config.get('regime_detector', {})
@@ -304,8 +293,6 @@ class ScalpingTrader:
                                 'start_time': process_start_time}
                 self.capital = state.get('capital', self.capital)
                 self.pair_manager.from_dict(state.get('pair_manager', {}))
-                if 'circuit_breaker' in state:
-                    self.circuit_breaker.from_dict(state['circuit_breaker'])
                 if 'regime_detector' in state:
                     self.regime_detector.from_dict(state['regime_detector'])
                 if 'current_regime' in state:
@@ -317,14 +304,8 @@ class ScalpingTrader:
                         pass
                 self.indicator_snapshots = state.get('indicator_snapshots', {})
 
-                # Restore initial_capital from state so the circuit breaker
-                # uses the paper trading capital, not the (much smaller) real
-                # Kraken balance.  Without this, drawdown % is computed
-                # against e.g. $800 instead of $4400 and the CB triggers on
-                # every minor loss.
                 if 'initial_capital' in state:
                     self.initial_capital = state['initial_capital']
-                    self.circuit_breaker.initial_capital = self.initial_capital
 
                 self.logger.info("Loaded saved state",
                                  capital=f"${self.capital:.2f}",
@@ -384,7 +365,6 @@ class ScalpingTrader:
             'initial_capital': self.initial_capital,
             'paper_trading': self.paper_trading,
             'pair_manager': self.pair_manager.to_dict(),
-            'circuit_breaker': self.circuit_breaker.to_dict(),
             'regime_detector': self.regime_detector.to_dict(),
             'current_regime': self._current_regime.value,
             'indicator_snapshots': self.indicator_snapshots,
@@ -1076,7 +1056,6 @@ class ScalpingTrader:
             },
             'enabled_pairs': self.pair_manager.get_enabled_pairs(self.pairs),
             'disabled_pairs': [p for p in self.pairs if not self.pair_manager.is_pair_enabled(p)],
-            'circuit_breaker': self.circuit_breaker.to_dict(),
             'regime': regime_info,
         }
 
@@ -1098,8 +1077,7 @@ def main():
 ================================================================
   Mean-reversion scalping with adaptive pair management
   Regime detection: auto-adjusts for bull/bear/sideways
-  Drawdown-based circuit breaker (per-pair + global)
-  Pairs auto-disable/re-enable after cooldown
+  Adaptive pair management with auto-disable/re-enable
   Using MAKER orders for lower fees (0.16% vs 0.26%)
   Dashboard: http://jfk21.phoebe.usbx.me:{args.dashboard_port}
 ================================================================

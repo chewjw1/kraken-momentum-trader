@@ -65,7 +65,7 @@ def load_state(data_dir: Path) -> dict:
         'trade_history': [],
         'regime': 'unknown',
         'regime_confidence': 0.0,
-        'circuit_breaker_state': 'closed',
+        'circuit_breaker_state': 'disabled',
         'uptime_seconds': 0,
         'start_time': datetime.now(timezone.utc).isoformat(),
         'deployed_capital': 0.0,
@@ -134,10 +134,8 @@ def load_state(data_dir: Path) -> dict:
         state['regime'] = state.get('current_regime', regime_data.get('regime', 'unknown'))
         state['regime_confidence'] = regime_data.get('confidence', 0.0)
 
-        # Circuit breaker
-        cb_data = state.get('circuit_breaker', {})
-        state['circuit_breaker_state'] = cb_data.get('state', 'closed')
-        state['circuit_breaker_reason'] = cb_data.get('trigger_reason')
+        state['circuit_breaker_state'] = 'disabled'
+        state['circuit_breaker_reason'] = None
         metrics = state.get('metrics', {})
         peak = metrics.get('peak_capital', 0)
         current = state.get('capital', 0)
