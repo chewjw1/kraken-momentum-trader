@@ -138,11 +138,13 @@ def load_state(data_dir: Path) -> dict:
         cb_data = state.get('circuit_breaker', {})
         state['circuit_breaker_state'] = cb_data.get('state', 'closed')
         state['circuit_breaker_reason'] = cb_data.get('trigger_reason')
-        state['current_drawdown_pct'] = 0.0
-        peak = cb_data.get('peak_equity', 0)
-        current = cb_data.get('current_equity', 0)
-        if peak > 0:
+        metrics = state.get('metrics', {})
+        peak = metrics.get('peak_capital', 0)
+        current = state.get('capital', 0)
+        if peak > 0 and current < peak:
             state['current_drawdown_pct'] = round(((peak - current) / peak) * 100, 2)
+        else:
+            state['current_drawdown_pct'] = 0.0
 
         # Uptime
         start_time_str = state.get('metrics', {}).get('start_time', '')

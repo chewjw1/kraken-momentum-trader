@@ -216,6 +216,7 @@ class ScalpingTrader:
             'wins': 0,
             'losses': 0,
             'total_pnl': 0.0,
+            'peak_capital': 0.0,
             'start_time': datetime.now(timezone.utc).isoformat()
         }
 
@@ -889,6 +890,8 @@ class ScalpingTrader:
                 pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
 
                 self.capital += pnl_usd
+                if self.capital > self.metrics.get('peak_capital', 0):
+                    self.metrics['peak_capital'] = self.capital
 
                 # Record trade in adaptive manager
                 self.pair_manager.record_trade(
