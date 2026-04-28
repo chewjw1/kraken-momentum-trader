@@ -38,12 +38,6 @@
                     {% else %}bg-gray-700 text-gray-300{% endif %}">
                     {{ regime|upper }}
                 </span>
-                <!-- Circuit Breaker -->
-                {% if circuit_breaker_state != 'closed' %}
-                <span class="px-3 py-1 rounded-full text-sm bg-red-900 text-red-300 animate-pulse">
-                    CB: {{ circuit_breaker_state|upper }}
-                </span>
-                {% endif %}
                 <!-- Paper/Live -->
                 <span class="px-3 py-1 rounded-full text-sm
                     {% if paper_trading %}bg-yellow-900 text-yellow-300{% else %}bg-red-900 text-red-300{% endif %}">
