@@ -311,6 +311,50 @@ def main():
     if trader.capital > initial * 2:
         anomalies.append(f"  WARN: Capital more than doubled (${trader.capital:.2f}) — suspiciously high")
 
+    # Per-pair pattern checks (catch noise-trading bugs)
+    fee_pct = 0.32  # round-trip 0.16% maker fee
+    pair_trade_data: dict = {}
+    for _, _, event in events:
+        if event.startswith("CLOSE"):
+            parts = event.split()
+            pair = parts[1]
+            try:
+                pnl = float(event.split("$")[1])
+            except (IndexError, ValueError):
+                continue
+            pair_trade_data.setdefault(pair, []).append(pnl)
+
+    for pair, pnls in pair_trade_data.items():
+        if len(pnls) >= 5:
+            losses = [p for p in pnls if p < 0]
+            wins = [p for p in pnls if p > 0]
+            wr = len(wins) / len(pnls) * 100
+
+            # Excessive trade count vs candle count
+            trades_per_100_candles = (len(pnls) / num_candles) * 100
+            if trades_per_100_candles > 10:  # >1 trade per 10 candles is excessive
+                anomalies.append(
+                    f"  WARN: {pair} traded {len(pnls)}x in {num_candles} candles "
+                    f"({trades_per_100_candles:.1f} per 100) — possible noise trading"
+                )
+
+            # Win rate below 15% likely indicates fee-bleed pattern
+            if wr < 15 and len(pnls) >= 10:
+                anomalies.append(
+                    f"  WARN: {pair} win rate {wr:.1f}% over {len(pnls)} trades — likely fee-bleed bug"
+                )
+
+            # Many losses clustered at fee level (within 0.1% of round-trip fee)
+            fee_level_losses = [p for p in losses if abs(abs(p / max(1, sum(abs(x) for x in pnls) / len(pnls))) - fee_pct/100) < 0.001]
+            if losses:
+                avg_loss_pct = sum(losses) / len(losses)
+                # If avg loss is suspiciously close to fee level
+                # (Hard to compute exact pct without size; just flag if > 80% of trades are losses)
+                if len(losses) / len(pnls) > 0.8 and len(pnls) >= 10:
+                    anomalies.append(
+                        f"  WARN: {pair} {len(losses)}/{len(pnls)} losses (avg ${avg_loss_pct:.2f}) — investigate"
+                    )
+
     if anomalies:
         for a in anomalies:
             print(a)

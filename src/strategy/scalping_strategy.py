@@ -300,8 +300,11 @@ class ScalpingStrategy(BaseStrategy):
             stop_pct = atr.atr_percent * self.config.atr_stop_multiplier
             tp_pct = atr.atr_percent * self.config.atr_tp_multiplier
 
-            # Clamp to reasonable bounds
-            stop_pct = max(0.3, min(stop_pct, 5.0))
+            # Floor the stop at the per-pair static stop_loss_percent. This
+            # prevents low-volatility pairs (like POL) from getting stops
+            # below noise level. The static value is the human-vetted
+            # "this stop makes sense for this asset".
+            stop_pct = max(self.config.stop_loss_percent, min(stop_pct, 5.0))
             tp_pct = max(0.5, min(tp_pct, 10.0))
             return stop_pct, tp_pct
 
