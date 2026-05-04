@@ -199,6 +199,17 @@ class ScalpingTrader:
             if 'candle_interval' in params:
                 self.pair_intervals[pair] = params['candle_interval']
 
+        # Correlation-aware position limits
+        corr_cfg = self.config.get('correlation_limits', {})
+        self.correlation_enabled = corr_cfg.get('enabled', False)
+        self.correlation_groups: list[dict] = corr_cfg.get('groups', [])
+
+        # Volume regime filter
+        vol_cfg = self.config.get('volume_filter', {})
+        self.volume_filter_enabled = vol_cfg.get('enabled', False)
+        self.volume_filter_min_ratio = vol_cfg.get('min_ratio', 0.5)
+        self.volume_filter_lookback = vol_cfg.get('lookback_candles', 30)
+
         # Metrics
         self.metrics = {
             'total_trades': 0,
@@ -673,6 +684,40 @@ class ScalpingTrader:
         """Get the strategy for a specific pair (per-pair or default)."""
         return self.pair_strategies.get(pair, self.strategy)
 
+    def _correlation_blocked(self, pair: str) -> Optional[str]:
+        """Return reason string if this pair is blocked by correlation limits, else None."""
+        if not self.correlation_enabled:
+            return None
+        for group in self.correlation_groups:
+            group_pairs = group.get('pairs', [])
+            if pair not in group_pairs:
+                continue
+            max_pos = group.get('max_positions', len(group_pairs))
+            current = sum(1 for p in self.positions if p in group_pairs)
+            if current >= max_pos:
+                return (
+                    f"correlation group '{group.get('name', '?')}' at limit "
+                    f"({current}/{max_pos})"
+                )
+        return None
+
+    def _volume_filter_blocked(self, market_data: MarketData) -> Optional[str]:
+        """Return reason string if entry is blocked by low volume, else None."""
+        if not self.volume_filter_enabled or not market_data.ohlc:
+            return None
+        candles = market_data.ohlc
+        if len(candles) < self.volume_filter_lookback + 1:
+            return None  # not enough history yet
+        recent = candles[-self.volume_filter_lookback - 1:-1]
+        avg_vol = sum(c.volume for c in recent) / len(recent)
+        if avg_vol <= 0:
+            return None
+        current_vol = candles[-1].volume
+        ratio = current_vol / avg_vol
+        if ratio < self.volume_filter_min_ratio:
+            return f"volume {ratio:.2f}x of {self.volume_filter_lookback}-candle SMA (need >= {self.volume_filter_min_ratio})"
+        return None
+
     def _compute_indicator_snapshot(self, pair: str, strategy: 'ScalpingStrategy', market_data: MarketData, current_price: float) -> None:
         """Compute and cache indicator values for the dashboard."""
         try:
@@ -916,6 +961,18 @@ class ScalpingTrader:
             signal = strategy.analyze(market_data, None)
 
             if signal.signal_type.value in ("buy", "sell_short"):
+                # Correlation cluster check
+                corr_block = self._correlation_blocked(pair)
+                if corr_block:
+                    self.logger.debug(f"Skipping {pair} entry — {corr_block}")
+                    return
+
+                # Volume regime check
+                vol_block = self._volume_filter_blocked(market_data)
+                if vol_block:
+                    self.logger.debug(f"Skipping {pair} entry — {vol_block}")
+                    return
+
                 pos_side = "long" if signal.signal_type.value == "buy" else "short"
                 deployed_capital = sum(p['size_usd'] for p in self.positions.values())
                 available_capital = self.capital - deployed_capital

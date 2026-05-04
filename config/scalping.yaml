@@ -334,6 +334,30 @@ position:
   min_scale: 0.6
   max_scale: 1.8
 
+# Correlation-aware position limits
+# Crypto alts move together — opening 6 longs on alts during a BTC drop
+# is effectively one trade. Limit cluster exposure to avoid concentrated risk.
+correlation_limits:
+  enabled: false   # Tested: hard cluster cap costs ~$2k across 3 quarters
+  groups:
+    - name: "alt_majors"
+      max_positions: 3   # of these correlated alts, max 3 open at once
+      pairs:
+        - ETH/USD
+        - SOL/USD
+        - AVAX/USD
+        - LINK/USD
+        - NEAR/USD
+        - DOT/USD
+        - ATOM/USD
+
+# Volume regime filter — skip entries when volume is abnormally low
+# (typically overnight or low-activity periods produce noise signals)
+volume_filter:
+  enabled: true
+  min_ratio: 0.5            # validated: +$338 across 3 quarters, +$332 on Q1'25
+  lookback_candles: 30      # SMA window
+
 # Fees
 fees:
   maker_percent: 0.16
