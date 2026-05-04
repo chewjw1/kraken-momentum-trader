@@ -210,6 +210,13 @@ class ScalpingTrader:
         self.volume_filter_min_ratio = vol_cfg.get('min_ratio', 0.5)
         self.volume_filter_lookback = vol_cfg.get('lookback_candles', 30)
 
+        # One-decision-per-candle guard. Live runner polls every 60s, but a 4h
+        # strategy has only one new "frame" every 4 hours. Without this, brief
+        # ticker spikes against the candle's high/low caused same-candle round
+        # trips (e.g., POL: 41 trades/wk, all noise). Track the last candle
+        # timestamp processed per pair; skip if unchanged.
+        self._last_processed_candle_ts: Dict[str, datetime] = {}
+
         # Metrics
         self.metrics = {
             'total_trades': 0,
@@ -777,6 +784,17 @@ class ScalpingTrader:
         market_data = self._get_market_data(pair)
         if not market_data:
             return
+
+        # One-decision-per-candle guard. A 4h strategy has one new frame every
+        # 4 hours; polling every 60s on the same candle risks rapid-fire trades
+        # on brief ticker excursions to the candle's high/low. Skip if the
+        # latest candle hasn't advanced since our last processing of this pair.
+        if market_data.ohlc:
+            latest_candle_ts = market_data.ohlc[-1].timestamp
+            last_seen = self._last_processed_candle_ts.get(pair)
+            if last_seen == latest_candle_ts:
+                return
+            self._last_processed_candle_ts[pair] = latest_candle_ts
 
         # Use real-time ticker price, not stale candle close!
         if market_data.ticker:
