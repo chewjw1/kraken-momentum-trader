@@ -324,11 +324,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, default=80)
     parser.add_argument("--pairs", type=str, default=None)
+    parser.add_argument("--train-dirs", type=str, default="data/q4_2024,data/q1_2025",
+                        help="Comma-separated training data directories")
+    parser.add_argument("--val-dir", type=str, default="data/q1_2026_fresh",
+                        help="Held-out validation data directory")
     args = parser.parse_args()
 
     base = Path("/home/user/kraken-momentum-trader")
-    train_dirs = [base / "data/q4_2024", base / "data/q1_2025"]
-    val_dir = base / "data/q1_2026_fresh"
+    train_dirs = [base / d for d in args.train_dirs.split(",")]
+    val_dir = base / args.val_dir
 
     with open(base / "config/scalping.yaml") as f:
         config = yaml.safe_load(f)

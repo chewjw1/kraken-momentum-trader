@@ -1,120 +1,120 @@
 ATOM/USD:
   adopt: true
-  current_val_return: -0.01129728980820073
-  delta_pct: 1.1648951099869373
+  current_val_return: -0.02934399854616822
+  delta_pct: 1.0322070780300237
   new_params:
     atr_stop_multiplier: 1.0
-    atr_tp_multiplier: 2.5
-    min_confirmations: 2
-    short_min_confirmations: 2
-    stop_loss_percent: 2.5
-    take_profit_percent: 4.5
-  new_val_return: 0.00035166129166864265
-AVAX/USD:
-  adopt: true
-  current_val_return: 0.02607374798035653
-  delta_pct: 5.066635332734204
-  new_params:
-    atr_stop_multiplier: 1.0
-    atr_tp_multiplier: 1.5
-    min_confirmations: 4
-    short_min_confirmations: 2
-    stop_loss_percent: 4.0
-    take_profit_percent: 2.0
-  new_val_return: 0.07674010130769857
-BTC/USD:
-  adopt: true
-  current_val_return: -0.019827343280408968
-  delta_pct: 3.5744829306223984
-  new_params:
-    atr_stop_multiplier: 1.75
-    atr_tp_multiplier: 1.5
-    min_confirmations: 2
-    short_min_confirmations: 2
-    stop_loss_percent: 3.5
-    take_profit_percent: 10.0
-  new_val_return: 0.015917486025815015
-DOT/USD:
-  adopt: true
-  current_val_return: 0.015283766336430927
-  delta_pct: 0.9638287373243839
-  new_params:
-    atr_stop_multiplier: 2.5
-    atr_tp_multiplier: 1.5
-    min_confirmations: 4
-    short_min_confirmations: 2
-    stop_loss_percent: 1.5
-    take_profit_percent: 9.5
-  new_val_return: 0.024922053709674766
-ETH/USD:
-  adopt: true
-  current_val_return: -0.019374364218079428
-  delta_pct: 3.3010621929668194
-  new_params:
-    atr_stop_multiplier: 2.5
-    atr_tp_multiplier: 1.75
+    atr_tp_multiplier: 3.5
     min_confirmations: 3
     short_min_confirmations: 2
     stop_loss_percent: 1.5
-    take_profit_percent: 1.5
-  new_val_return: 0.01363625771158877
-LINK/USD:
+    take_profit_percent: 2.0
+  new_val_return: -0.019021927765867985
+AVAX/USD:
   adopt: false
-  current_val_return: 0.0018402323425530994
-  delta_pct: -4.983454336363193
-  new_params:
-    atr_stop_multiplier: 2.75
-    atr_tp_multiplier: 1.5
-    min_confirmations: 2
-    short_min_confirmations: 4
-    stop_loss_percent: 4.0
-    take_profit_percent: 4.0
-  new_val_return: -0.04799431102107883
-NEAR/USD:
-  adopt: false
-  current_val_return: -0.0021531960854857973
-  delta_pct: -0.9851489633564234
+  current_val_return: -0.005695224320442322
+  delta_pct: -2.9200296928928404
   new_params:
     atr_stop_multiplier: 1.25
+    atr_tp_multiplier: 1.75
+    min_confirmations: 2
+    short_min_confirmations: 3
+    stop_loss_percent: 1.5
+    take_profit_percent: 10.0
+  new_val_return: -0.034895521249370724
+BTC/USD:
+  adopt: false
+  current_val_return: -0.021062284516852013
+  delta_pct: -0.6876622979018067
+  new_params:
+    atr_stop_multiplier: 1.5
+    atr_tp_multiplier: 1.75
+    min_confirmations: 2
+    short_min_confirmations: 2
+    stop_loss_percent: 3.5
+    take_profit_percent: 6.0
+  new_val_return: -0.02793890749587008
+DOT/USD:
+  adopt: true
+  current_val_return: 0.01284121924230294
+  delta_pct: 3.4173235106439277
+  new_params:
+    atr_stop_multiplier: 1.5
+    atr_tp_multiplier: 1.75
+    min_confirmations: 3
+    short_min_confirmations: 2
+    stop_loss_percent: 2.0
+    take_profit_percent: 4.0
+  new_val_return: 0.04701445434874222
+ETH/USD:
+  adopt: true
+  current_val_return: -0.03767673565534369
+  delta_pct: 6.844867861446273
+  new_params:
+    atr_stop_multiplier: 2.75
+    atr_tp_multiplier: 3.0
+    min_confirmations: 4
+    short_min_confirmations: 2
+    stop_loss_percent: 2.0
+    take_profit_percent: 2.5
+  new_val_return: 0.03077194295911904
+LINK/USD:
+  adopt: true
+  current_val_return: -0.026611807437463175
+  delta_pct: 3.5521970474973927
+  new_params:
+    atr_stop_multiplier: 1.0
     atr_tp_multiplier: 2.0
+    min_confirmations: 2
+    short_min_confirmations: 4
+    stop_loss_percent: 1.0
+    take_profit_percent: 4.5
+  new_val_return: 0.008910163037510755
+NEAR/USD:
+  adopt: false
+  current_val_return: -0.07909376855972569
+  delta_pct: 0.3985115255224089
+  new_params:
+    atr_stop_multiplier: 2.75
+    atr_tp_multiplier: 2.25
     min_confirmations: 4
     short_min_confirmations: 2
     stop_loss_percent: 1.5
-    take_profit_percent: 7.0
-  new_val_return: -0.01200468571905003
+    take_profit_percent: 2.5
+  new_val_return: -0.0751086533045016
 POL/USD:
-  adopt: true
-  current_val_return: -0.01752171044615643
-  delta_pct: 4.868563527150091
+  adopt: false
+  current_val_return: -0.01470808566320793
+  delta_pct: -1.5247503282472643
   new_params:
-    atr_stop_multiplier: 1.0
-    atr_tp_multiplier: 2.5
-    min_confirmations: 4
+    atr_stop_multiplier: 2.25
+    atr_tp_multiplier: 3.25
+    min_confirmations: 3
     short_min_confirmations: 2
-    stop_loss_percent: 2.0
-    take_profit_percent: 9.0
-  new_val_return: 0.031163924825344476
+    stop_loss_percent: 1.5
+    take_profit_percent: 4.5
+  new_val_return: -0.029955588945680574
 SOL/USD:
   adopt: false
-  current_val_return: 0.034935982179120764
-  delta_pct: -5.398275080321327
-  new_params:
-    atr_stop_multiplier: 1.25
-    atr_tp_multiplier: 1.5
-    min_confirmations: 2
-    short_min_confirmations: 2
-    stop_loss_percent: 1.0
-    take_profit_percent: 6.5
-  new_val_return: -0.01904676862409251
-XRP/USD:
-  adopt: true
-  current_val_return: -0.045952522596735254
-  delta_pct: 5.687745389303146
+  current_val_return: -0.004760741577587033
+  delta_pct: -2.3740846336129287
   new_params:
     atr_stop_multiplier: 1.0
     atr_tp_multiplier: 1.5
     min_confirmations: 2
     short_min_confirmations: 2
     stop_loss_percent: 2.0
-    take_profit_percent: 3.0
-  new_val_return: 0.0109249312962962
+    take_profit_percent: 2.5
+  new_val_return: -0.02850158791371632
+XRP/USD:
+  adopt: false
+  current_val_return: 0.0019498812615729548
+  delta_pct: 1.352300657890846
+  new_params:
+    atr_stop_multiplier: 1.0
+    atr_tp_multiplier: 1.5
+    min_confirmations: 2
+    short_min_confirmations: 3
+    stop_loss_percent: 2.0
+    take_profit_percent: 7.5
+  new_val_return: 0.015472887840481417

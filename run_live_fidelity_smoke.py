@@ -249,9 +249,12 @@ def main():
     print(f"  Total 4h entries: {total_4h_entries}  {'<-- BUG' if total_4h_entries == 0 else 'OK'}\n")
 
     print(f"  --- 12h PAIRS: decision boundary alignment (production bug: re-phased every 4h) ---")
+    # Disaster-stop exits legitimately fire intra-candle (any poll), so when
+    # it's enabled only ENTRIES must be candle-anchored.
+    disaster_on = getattr(trader, "disaster_stop_pct", 0) > 0
     misaligned = 0
     for pair in sorted(pairs_12h):
-        times = entries[pair] + exits[pair]
+        times = list(entries[pair]) + ([] if disaster_on else list(exits[pair]))
         bad = [t for t in times
                if (int(t.timestamp()) % 43200) > CANDLE_SECONDS + polls_per_candle and
                   (int(t.timestamp()) % 43200) < 43200 - 600]

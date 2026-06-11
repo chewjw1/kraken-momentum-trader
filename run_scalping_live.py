@@ -80,6 +80,8 @@ class ScalpingTrader:
         vwap_cfg = ind.get('vwap', {})
         vol_cfg = ind.get('volume', {})
         shorting_cfg = self.config.get('shorting', {})
+        ema_filter_cfg = self.config.get('ema_filter', {})
+        ema_bearish_thr = ema_filter_cfg.get('bearish_threshold', -0.5)
 
         # Default strategy config built from indicators section + strategy section
         default_config = ScalpingConfig(
@@ -109,6 +111,7 @@ class ScalpingTrader:
             volume_spike_threshold=vol_cfg.get('spike_threshold', 1.5),
             shorting_enabled=shorting_cfg.get('enabled', True),
             short_min_confirmations=shorting_cfg.get('min_confirmations', 3),
+            ema_bearish_threshold=ema_bearish_thr,
         )
         self.strategy = ScalpingStrategy(default_config)
 
@@ -143,6 +146,7 @@ class ScalpingTrader:
                 use_atr_stops=params.get('use_atr_stops', default_config.use_atr_stops),
                 shorting_enabled=params.get('shorting_enabled', default_config.shorting_enabled),
                 short_min_confirmations=params.get('short_min_confirmations', default_config.short_min_confirmations),
+                ema_bearish_threshold=params.get('ema_bearish_threshold', default_config.ema_bearish_threshold),
             )
             self.pair_strategies[pair] = ScalpingStrategy(pair_config)
 
@@ -152,7 +156,9 @@ class ScalpingTrader:
             max_consecutive_losses=self.config.get('adaptive', {}).get('max_consecutive_losses', 5),
             cooldown_hours=self.config.get('adaptive', {}).get('cooldown_hours', 2.0),
             reenable_win_rate=self.config.get('adaptive', {}).get('reenable_win_rate', 0.45),
-            confidence_scaling=False,
+            confidence_scaling=self.config.get('position', {}).get('confidence_scaling', False),
+            min_position_scale=self.config.get('position', {}).get('min_scale', 0.5),
+            max_position_scale=self.config.get('position', {}).get('max_scale', 1.5),
         )
         self.pair_manager = AdaptivePairManager(adaptive_config)
 
@@ -174,7 +180,9 @@ class ScalpingTrader:
         self._current_regime = MarketRegime.UNKNOWN
         self._regime_adjustments: Dict[str, float] = {}
         self._regime_check_counter = 0
-        self._regime_check_interval = 20  # Re-detect every 20 committed reference candles
+        # Re-detect every N committed reference candles. This slow cadence is a
+        # load-bearing whipsaw debouncer — see _update_regime docstring.
+        self._regime_check_interval = regime_cfg.get('check_every_candles', 20)
         self._last_regime_candle_ts: Optional[datetime] = None
 
         # Wall clock, injectable by test harnesses that simulate historical time
@@ -184,6 +192,8 @@ class ScalpingTrader:
         # Trailing stops (disabled by default — params optimized without them)
         ts_cfg = self.config.get('trailing_stops', {})
         self.trailing_stops_enabled = ts_cfg.get('enabled', False)
+        self.trail_trigger_pct = ts_cfg.get('trail_trigger_pct', 0.5)
+        self.trail_lock_pct = ts_cfg.get('trail_lock_pct', 0.5)
 
         # Store base configs for regime adjustment
         self._base_default_config = default_config
@@ -595,6 +605,7 @@ class ScalpingTrader:
             shorting_enabled=shorting,
             short_min_confirmations=max(1, base.short_min_confirmations + short_conf_offset),
             trend_short_enabled=trend_short,
+            ema_bearish_threshold=base.ema_bearish_threshold,
         )
         self.strategy = ScalpingStrategy(adj_config)
 
@@ -634,6 +645,7 @@ class ScalpingTrader:
                 shorting_enabled=shorting and params.get('shorting_enabled', True),
                 short_min_confirmations=max(1, params.get('short_min_confirmations', base.short_min_confirmations) + short_conf_offset),
                 trend_short_enabled=trend_short,
+                ema_bearish_threshold=params.get('ema_bearish_threshold', base.ema_bearish_threshold),
             )
             self.pair_strategies[pair] = ScalpingStrategy(pair_config)
 
@@ -1013,12 +1025,12 @@ class ScalpingTrader:
 
                 tp_progress = unrealized_pct / dynamic_tp if dynamic_tp > 0 else 0
 
-                if tp_progress >= 0.5:
+                if tp_progress >= self.trail_trigger_pct:
                     if pos_side == "long":
-                        trail_price = entry_price * (1 + unrealized_pct * 0.5 / 100)
+                        trail_price = entry_price * (1 + unrealized_pct * self.trail_lock_pct / 100)
                         trailing_stop = max(trailing_stop, trail_price)
                     else:
-                        trail_price = entry_price * (1 - unrealized_pct * 0.5 / 100)
+                        trail_price = entry_price * (1 - unrealized_pct * self.trail_lock_pct / 100)
                         trailing_stop = trail_price if trailing_stop == 0 else min(trailing_stop, trail_price)
 
                 position_data['best_price'] = best_price

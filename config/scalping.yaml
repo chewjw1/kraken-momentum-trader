@@ -1,19 +1,30 @@
-# Scalping Strategy Configuration (v10 — Re-trained with corrected execution)
+# Scalping Strategy Configuration (v11 — Q2 2026 OOS-validated, config hygiene)
 # Enhanced with: Stochastic, MACD, OBV, ATR dynamic stops, short selling,
-#   doji candle filter, trailing stops (available but disabled)
+#   doji candle filter, disaster stop, trailing stops (available but disabled)
 #
-# v10 changes:
-#   - Re-trained risk/reward params (TP, SL, ATR mults, confirmations) with
-#     corrected execution model (one-decision-per-candle, proper 12h aggregation)
-#   - Training: Q4 2024 + Q1 2025 (6 months)
-#   - Forward validation: Q1 2026 fresh Kraken data (held out, 3 months)
-#   - 3 x 12h pairs adopted new params (AVAX, ATOM, POL) — most affected by
-#     12h aggregation correction that was the main execution fix
-#   - 7 pairs kept v9 params (4h pairs + SOL/LINK/NEAR)
-#   - Indicator periods (RSI, stoch, BB, etc.) locked at v9 values
+# v11 changes (June 2026):
+#   - Q2 2026 out-of-sample validation (Apr 1 - Jun 10, pristine data fetched
+#     after all parameters were chosen; full bull leg $68k->$82.5k then bear
+#     leg to $60k): replay +$264 (+2.6%), live-fidelity -$630. Roughly
+#     breakeven through a brutal whipsaw quarter.
+#   - Retrain attempt on 3 quarters (Q4'24+Q1'25+Q1'26) validated against Q2:
+#     REJECTED. Full 4-pair candidate set cost -$3,041 across 4 quarters in
+#     integrated replay (loosened confirmation gates -> excess trading, same
+#     failure mode as v10 candidates). Best subset (+$150/4qtrs) was inside
+#     the +/-$1k phase-noise band. Params are at their data-supported optimum.
+#   - Config hygiene: removed dead circuit_breaker section and
+#     order_timeout_seconds; wired previously-dead knobs (ema_filter
+#     bearish_threshold, trailing trail_trigger/lock_pct, position
+#     confidence_scaling/min/max_scale, regime check_every_candles) —
+#     all values match previous hardcodes, behavior-neutral (replay parity
+#     verified to the penny).
+#   - check_interval 90s -> 60s: faster disaster-stop reaction; entries and
+#     normal exits are candle-anchored so decision counts are unaffected.
 #
-# Integrated replay results (Q1 2026 fresh, $10k shared capital):
-#   +$2,667 (+26.67%), 99 trades, 60.6% WR (was +$2,291 with v9 params)
+# Validated baselines (integrated replay, $10k, disaster stop 10%):
+#   Q4 2024 +$1,068 | Q1 2025 -$1,233 | Q1 2026 +$3,035 | Q2 2026 +$264
+# Realistic (live-fidelity, next-open fills):
+#   Q1 2026 +$1,777 | Q2 2026 -$630
 strategy:
   name: "scalping"
 
@@ -360,15 +371,6 @@ fees:
 execution:
   use_maker_orders: true
   maker_price_offset: 0.0
-  order_timeout_seconds: 60
-
-# Circuit breaker — balanced protection with faster recovery
-circuit_breaker:
-  global_max_drawdown_pct: 7.0   # 5→7%: allow more room before global halt
-  cooldown_hours: 2              # 4→2: recover faster from global circuit break
-  pair_max_drawdown_pct: 3.0     # 2→3%: more room per pair before disabling
-  pair_cooldown_hours: 1.0       # 2→1: re-enable pairs faster
-  consecutive_loss_limit: 4
 
 # Regime detector
 regime_detector:
@@ -376,12 +378,18 @@ regime_detector:
   slow_sma_period: 100
   bull_slope_threshold: 0.02
   bear_slope_threshold: -0.02
+  # Re-detect every N committed BTC candles. LOAD-BEARING whipsaw debouncer:
+  # per-candle checking turns Q4 2024 replay from +$1,068 into -$595
+  # (43 regime flips vs 4). Do not lower without 3-quarter revalidation.
+  check_every_candles: 20
 
-# EMA trend filter
+# EMA trend filter threshold (filter on/off is controlled per-regime by
+# REGIME_ADJUSTMENTS in regime_detector.py, not by config)
 ema_filter:
-  enabled: true
-  bearish_threshold: -0.5
+  bearish_threshold: -0.5   # Block longs when EMA trend strength below this %
 
 # Trading loop
 trading:
-  check_interval_seconds: 90   # 120→90: check more frequently for faster signal capture
+  check_interval_seconds: 60   # 90→60: faster disaster-stop reaction; entries
+                               # and normal exits are candle-anchored so poll
+                               # frequency does not affect decision count
