@@ -18,7 +18,7 @@ import sys
 import time
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, List
 
@@ -174,7 +174,12 @@ class ScalpingTrader:
         self._current_regime = MarketRegime.UNKNOWN
         self._regime_adjustments: Dict[str, float] = {}
         self._regime_check_counter = 0
-        self._regime_check_interval = 20  # Only check regime every 20 cycles
+        self._regime_check_interval = 20  # Re-detect every 20 committed reference candles
+        self._last_regime_candle_ts: Optional[datetime] = None
+
+        # Wall clock, injectable by test harnesses that simulate historical time
+        # (used to detect Kraken's in-progress candle)
+        self._now = lambda: datetime.now(timezone.utc)
 
         # Trailing stops (disabled by default — params optimized without them)
         ts_cfg = self.config.get('trailing_stops', {})
@@ -397,12 +402,41 @@ class ScalpingTrader:
     # Valid Kraken API OHLC intervals (minutes)
     VALID_API_INTERVALS = {1, 5, 15, 30, 60, 240, 1440, 10080, 21600}
 
+    def _drop_in_progress(self, candles: list[OHLC], interval_minutes: int) -> list[OHLC]:
+        """Drop Kraken's in-progress candle (always the last array entry).
+
+        Trading decisions must only see committed candles. The in-progress
+        stub has partial volume and near-zero range, which poisons the
+        volume filter (stub volume vs 30-candle SMA always fails) and the
+        doji filter. Combined with the one-decision-per-candle guard firing
+        at the first poll of a new candle, this blocked every 4h-pair entry
+        in production for 18 days (May 2026)."""
+        if candles and candles[-1].timestamp + timedelta(minutes=interval_minutes) > self._now():
+            return candles[:-1]
+        return candles
+
     @staticmethod
-    def _aggregate_candles(candles: list[OHLC], factor: int) -> list[OHLC]:
-        """Aggregate smaller candles into larger ones by grouping `factor` candles."""
+    def _aggregate_candles(candles: list[OHLC], factor: int, target_interval_minutes: int) -> list[OHLC]:
+        """Aggregate smaller candles into larger ones, anchored to epoch-aligned
+        boundaries (12h candles always span 00:00-12:00 / 12:00-00:00 UTC).
+
+        Anchoring to the window's first element is wrong: Kraken serves a
+        sliding ~720-candle window, so position-based grouping re-phases every
+        base candle. In production this made 12h candle boundaries shift every
+        4h, tripling the decision frequency for 12h pairs and evaluating
+        indicators on re-phased candles (May 2026: SOL/POL decisions at
+        16:00/20:00 UTC). Only complete buckets are emitted, so the trailing
+        partial bucket never produces a decision candle."""
+        bucket_seconds = target_interval_minutes * 60
+        buckets: dict[int, list[OHLC]] = {}
+        for c in candles:
+            b = int(c.timestamp.timestamp()) // bucket_seconds
+            buckets.setdefault(b, []).append(c)
         aggregated = []
-        for i in range(0, len(candles) - factor + 1, factor):
-            group = candles[i:i + factor]
+        for b in sorted(buckets):
+            group = buckets[b]
+            if len(group) != factor:
+                continue  # partial leading/trailing bucket
             aggregated.append(OHLC(
                 timestamp=group[0].timestamp,
                 open=group[0].open,
@@ -416,16 +450,21 @@ class ScalpingTrader:
         return aggregated
 
     def _fetch_ohlc(self, pair: str, interval: int) -> list[OHLC]:
-        """Fetch OHLC data, aggregating from a smaller interval if needed."""
+        """Fetch OHLC data, aggregating from a smaller interval if needed.
+
+        Always strips the in-progress candle so strategy decisions see only
+        committed data — matching the replay/backtest execution model."""
         if interval in self.VALID_API_INTERVALS:
-            return self.client.get_ohlc(pair, interval=interval)
+            raw = self.client.get_ohlc(pair, interval=interval)
+            return self._drop_in_progress(raw, interval)
 
         # Find the largest valid interval that evenly divides the target
         for base in sorted(self.VALID_API_INTERVALS, reverse=True):
             if base < interval and interval % base == 0:
                 factor = interval // base
                 raw = self.client.get_ohlc(pair, interval=base)
-                return self._aggregate_candles(raw, factor)
+                raw = self._drop_in_progress(raw, base)
+                return self._aggregate_candles(raw, factor, interval)
 
         # Fallback: use as-is (will likely error, same as before)
         return self.client.get_ohlc(pair, interval=interval)
@@ -456,22 +495,37 @@ class ScalpingTrader:
         Adjusts strategy parameters (TP, SL, position size, confirmations)
         based on the detected regime. Rebuilds strategy instances when the
         regime changes.
+
+        Cadence is anchored to COMMITTED reference candles, not loop cycles:
+        re-detection runs every `_regime_check_interval` new BTC candles. The
+        previous cycle-count cadence meant live re-checked every ~30 minutes
+        while the validated replay re-checked every 20 candles (3.3 days) —
+        per-candle checking in replay turns Q4 2024 from +$1,068 into -$595
+        (43 regime flips vs 4). The slow cadence is a load-bearing debouncer.
         """
-        # Only check regime every N cycles to avoid whipsawing
-        self._regime_check_counter += 1
+        # Use BTC as regime reference (largest, most liquid)
+        reference_pair = "BTC/USD"
+        try:
+            # _fetch_ohlc strips the in-progress candle, so regime SMAs only
+            # see committed data (same execution model as the strategies)
+            ohlc = self._fetch_ohlc(reference_pair, self.candle_interval)
+            if not ohlc:
+                return
+        except Exception as e:
+            self.logger.error(f"Error fetching regime data: {e}")
+            return
+
+        # Count only newly committed reference candles
+        latest_ts = ohlc[-1].timestamp
+        if latest_ts != self._last_regime_candle_ts:
+            self._last_regime_candle_ts = latest_ts
+            self._regime_check_counter += 1
         if self._regime_check_counter < self._regime_check_interval:
             return
         self._regime_check_counter = 0
 
-        # Use BTC as regime reference (largest, most liquid)
-        reference_pair = "BTC/USD"
-        try:
-            ohlc = self.client.get_ohlc(reference_pair, interval=self.candle_interval)
-            if not ohlc or len(ohlc) < self.regime_detector.config.min_data_points:
-                return  # Not enough data yet
-        except Exception as e:
-            self.logger.error(f"Error fetching regime data: {e}")
-            return
+        if len(ohlc) < self.regime_detector.config.min_data_points:
+            return  # Not enough data yet
 
         closes = [c.close for c in ohlc]
         highs = [c.high for c in ohlc]
