@@ -661,8 +661,13 @@ class KrakenClient:
             self._paper_balances[quote] = self._paper_balances.get(quote, 0) - cost - fee
             self._paper_balances[base] = self._paper_balances.get(base, 0) + volume
         else:
-            if self._paper_balances.get(base, 0) < volume:
-                raise KrakenAPIError("Insufficient balance for paper trade")
+            # A SELL is either a spot exit of held inventory (long close) or a
+            # margin short ENTRY of an asset we do not hold. The strategy layer
+            # owns position sizing and P&L (self.capital); these paper balances
+            # are bookkeeping only. The old spot-inventory check rejected every
+            # short entry ("Insufficient balance"), silently making live paper
+            # trading long-only — fatal in a BEAR regime. Model the short by
+            # letting the base balance go negative and crediting USD proceeds.
             self._paper_balances[base] = self._paper_balances.get(base, 0) - volume
             self._paper_balances[quote] = self._paper_balances.get(quote, 0) + cost - fee
 
