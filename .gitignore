@@ -215,3 +215,5 @@ data/kraken_historical/
 data/scalping/
 data/replay_test/
 data/smoke_test/
+data/live_fidelity_smoke/
+data/replay_cadence_test/
