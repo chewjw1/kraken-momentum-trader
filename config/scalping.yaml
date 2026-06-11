@@ -342,6 +342,15 @@ volume_filter:
   min_ratio: 0.5            # validated: +$338 across 3 quarters, +$332 on Q1'25
   lookback_candles: 30      # SMA window
 
+# Risk limits
+risk:
+  # Intra-candle hard loss floor, checked every poll (normal ATR stops are
+  # candle-anchored and routinely fill 2x-5x past -5%; worst observed -27.9%).
+  # 10% validated in live-fidelity sim: total +$125 over 3 quarters, worst
+  # quarter improved -$1,616 -> -$1,037, single-trade loss capped ~-10%.
+  # Set 0 to disable.
+  disaster_stop_percent: 10.0
+
 # Fees
 fees:
   maker_percent: 0.16

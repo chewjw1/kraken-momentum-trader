@@ -184,6 +184,10 @@ def main():
     # Inject simulated clock if the trader supports it (post-fix code)
     if hasattr(trader, "_now"):
         trader._now = mock_client.sim_now
+    # Optional disaster-stop override for A/B experiments (arg 3, percent)
+    if len(sys.argv) > 3 and hasattr(trader, "disaster_stop_pct"):
+        trader.disaster_stop_pct = float(sys.argv[3])
+        print(f"  Disaster stop override: {trader.disaster_stop_pct:.1f}%")
 
     pairs_4h = [p for p in trader.pairs if trader.pair_intervals.get(p, trader.candle_interval) == 240]
     pairs_12h = [p for p in trader.pairs if trader.pair_intervals.get(p, trader.candle_interval) == 720]

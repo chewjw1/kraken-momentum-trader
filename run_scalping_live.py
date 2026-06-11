@@ -192,6 +192,8 @@ class ScalpingTrader:
         # Order execution settings
         self.use_maker_orders = self.config.get('execution', {}).get('use_maker_orders', True)
         self.maker_price_offset = self.config.get('execution', {}).get('maker_price_offset', 0.0)
+        # Disaster stop: intra-candle hard loss floor (% of entry), 0 = disabled
+        self.disaster_stop_pct = float(self.config.get('risk', {}).get('disaster_stop_percent', 0.0))
         # Fee rate depends on order type
         self.fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if self.use_maker_orders else self.config.get('fees', {}).get('taker_percent', 0.26)
 
@@ -829,6 +831,91 @@ class ScalpingTrader:
         except Exception as e:
             self.logger.debug(f"Could not compute indicators for {pair}: {e}")
 
+    def _close_position(self, pair: str, exit_reason: str, current_price: float,
+                        strategy_instance: 'ScalpingStrategy') -> bool:
+        """Execute the exit order and settle P&L/metrics for an open position.
+
+        Returns True if the position was closed, False if the exit order
+        failed (position stays open, retried next cycle)."""
+        position_data = self.positions[pair]
+        pos_side = position_data.get('side', 'long')
+
+        exit_order = self._execute_exit_order(pair, pos_side, position_data['size'])
+        if exit_order is None:
+            self.logger.error(
+                f"EXIT ORDER FAILED for {pair} — position still open, will retry next cycle",
+                side=pos_side,
+                reason=exit_reason,
+            )
+            return False
+
+        # Use actual fill price if available, otherwise use current_price
+        exit_price = exit_order.get('fill_price') or current_price
+
+        # Calculate P&L from actual fill prices
+        entry_price = position_data['entry_price']
+        if entry_price <= 0:
+            pnl_pct = 0.0
+        elif pos_side == "long":
+            pnl_pct = ((exit_price - entry_price) / entry_price) * 100
+        else:
+            pnl_pct = ((entry_price - exit_price) / entry_price) * 100
+
+        # Use actual fee from order if available, otherwise estimate
+        actual_fee = exit_order.get('fee', 0.0)
+        entry_fee = position_data.get('entry_fee', 0.0)
+        if actual_fee > 0 or entry_fee > 0:
+            total_fee_usd = actual_fee + entry_fee
+            fee_pct_actual = (total_fee_usd / position_data['size_usd']) * 100
+            net_pnl_pct = pnl_pct - fee_pct_actual
+        else:
+            fee_pct = strategy_instance.config.fee_percent * 2
+            net_pnl_pct = pnl_pct - fee_pct
+
+        pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
+
+        self.capital += pnl_usd
+        if self.capital > self.metrics.get('peak_capital', 0):
+            self.metrics['peak_capital'] = self.capital
+
+        # Record trade in adaptive manager
+        self.pair_manager.record_trade(
+            pair=pair,
+            entry_time=datetime.fromisoformat(position_data['entry_time']),
+            exit_time=datetime.now(timezone.utc),
+            pnl=pnl_usd,
+            pnl_percent=net_pnl_pct,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            size_usd=position_data['size_usd'],
+            side=pos_side,
+        )
+
+        # Update metrics
+        self.metrics['total_trades'] += 1
+        self.metrics['total_pnl'] += pnl_usd
+        if pnl_usd > 0:
+            self.metrics['wins'] += 1
+        else:
+            self.metrics['losses'] += 1
+
+        self.logger.info(
+            f"CLOSED {pair}",
+            side=pos_side,
+            reason=exit_reason,
+            exit_price=f"${exit_price:.2f}",
+            entry_order=position_data.get('order_id', ''),
+            exit_order=exit_order.get('order_id', ''),
+            pnl_pct=f"{net_pnl_pct:.2f}%",
+            pnl_usd=f"${pnl_usd:.2f}",
+            capital=f"${self.capital:.2f}",
+            regime=self._current_regime.value,
+        )
+
+        del self.positions[pair]
+        self._save_state()
+        return True
+
     def _process_pair(self, pair: str) -> None:
         """Process a single trading pair."""
         # Check if pair is enabled by adaptive manager
@@ -838,6 +925,37 @@ class ScalpingTrader:
         market_data = self._get_market_data(pair)
         if not market_data:
             return
+
+        # Disaster stop: hard intra-candle loss floor, evaluated EVERY poll
+        # (before the one-decision-per-candle guard). Normal ATR stops stay
+        # candle-anchored — tight intra-candle stops destroy the
+        # mean-reversion edge (tested) — but forensics across 3 quarters
+        # showed stops filling 2x-5x past the -5% threshold (tails to -28%)
+        # because they wait for the next candle. This floor only fires far
+        # beyond the normal stop, capping catastrophes without touching wick
+        # noise. 0 disables.
+        if self.disaster_stop_pct > 0 and pair in self.positions and market_data.ticker:
+            d_data = self.positions[pair]
+            d_entry = d_data.get('entry_price', 0)
+            d_price = market_data.ticker.last
+            if d_entry > 0:
+                if d_data.get('side', 'long') == 'long':
+                    d_pnl = (d_price - d_entry) / d_entry * 100
+                else:
+                    d_pnl = (d_entry - d_price) / d_entry * 100
+                if d_pnl <= -self.disaster_stop_pct:
+                    self.logger.warning(
+                        f"DISASTER STOP {pair}",
+                        pnl=f"{d_pnl:.2f}%",
+                        floor=f"-{self.disaster_stop_pct:.1f}%",
+                    )
+                    self._close_position(
+                        pair,
+                        f"Disaster stop: {d_pnl:.2f}% breached -{self.disaster_stop_pct:.1f}% floor",
+                        d_price,
+                        self._get_strategy_for_pair(pair),
+                    )
+                    return
 
         # One-decision-per-candle guard. A 4h strategy has one new frame every
         # 4 hours; polling every 60s on the same candle risks rapid-fire trades
@@ -951,81 +1069,7 @@ class ScalpingTrader:
                     exit_reason = signal.reason
 
             if should_exit:
-                # Execute exit order on Kraken
-                exit_order = self._execute_exit_order(pair, pos_side, position_data['size'])
-                if exit_order is None:
-                    self.logger.error(
-                        f"EXIT ORDER FAILED for {pair} — position still open, will retry next cycle",
-                        side=pos_side,
-                        reason=exit_reason,
-                    )
-                    return
-
-                # Use actual fill price if available, otherwise use current_price
-                exit_price = exit_order.get('fill_price') or current_price
-
-                # Calculate P&L from actual fill prices
-                entry_price = position.entry_price
-                if entry_price <= 0:
-                    pnl_pct = 0.0
-                elif pos_side == "long":
-                    pnl_pct = ((exit_price - entry_price) / entry_price) * 100
-                else:
-                    pnl_pct = ((entry_price - exit_price) / entry_price) * 100
-
-                # Use actual fee from order if available, otherwise estimate
-                actual_fee = exit_order.get('fee', 0.0)
-                entry_fee = position_data.get('entry_fee', 0.0)
-                if actual_fee > 0 or entry_fee > 0:
-                    total_fee_usd = actual_fee + entry_fee
-                    fee_pct_actual = (total_fee_usd / position_data['size_usd']) * 100
-                    net_pnl_pct = pnl_pct - fee_pct_actual
-                else:
-                    fee_pct = strategy_instance.config.fee_percent * 2
-                    net_pnl_pct = pnl_pct - fee_pct
-
-                pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
-
-                self.capital += pnl_usd
-                if self.capital > self.metrics.get('peak_capital', 0):
-                    self.metrics['peak_capital'] = self.capital
-
-                # Record trade in adaptive manager
-                self.pair_manager.record_trade(
-                    pair=pair,
-                    entry_time=position.entry_time,
-                    exit_time=datetime.now(timezone.utc),
-                    pnl=pnl_usd,
-                    pnl_percent=net_pnl_pct,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    size_usd=position_data['size_usd'],
-                    side=pos_side,
-                )
-
-                # Update metrics
-                self.metrics['total_trades'] += 1
-                self.metrics['total_pnl'] += pnl_usd
-                if pnl_usd > 0:
-                    self.metrics['wins'] += 1
-                else:
-                    self.metrics['losses'] += 1
-
-                self.logger.info(
-                    f"CLOSED {pair}",
-                    side=pos_side,
-                    reason=exit_reason,
-                    exit_price=f"${exit_price:.2f}",
-                    entry_order=position_data.get('order_id', ''),
-                    exit_order=exit_order.get('order_id', ''),
-                    pnl_pct=f"{net_pnl_pct:.2f}%",
-                    pnl_usd=f"${pnl_usd:.2f}",
-                    capital=f"${self.capital:.2f}",
-                    regime=self._current_regime.value,
-                )
-
-                del self.positions[pair]
-                self._save_state()
+                self._close_position(pair, exit_reason, current_price, strategy_instance)
 
         else:
             # Look for entry
