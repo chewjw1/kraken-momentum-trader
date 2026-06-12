@@ -80,6 +80,10 @@ class ScalpingTrader:
         vwap_cfg = ind.get('vwap', {})
         vol_cfg = ind.get('volume', {})
         shorting_cfg = self.config.get('shorting', {})
+        # Kraken spot shorts are margin orders; leverage >= 2 is required by
+        # the exchange. Volume is still set by the strategy, so leverage only
+        # affects collateral, never position size.
+        self.short_leverage = int(shorting_cfg.get('leverage', 2))
         ema_filter_cfg = self.config.get('ema_filter', {})
         ema_bearish_thr = ema_filter_cfg.get('bearish_threshold', -0.5)
 
@@ -372,14 +376,25 @@ class ScalpingTrader:
         for pair, pos in self.positions.items():
             base = pair.split("/")[0]
             size = pos.get('size', 0)
-            if size > 0:
-                current = self.client._paper_balances.get(base, 0)
-                if current < size:
-                    self.client._paper_balances[base] = size
+            if size <= 0:
+                continue
+            current = self.client._paper_balances.get(base, 0)
+            if pos.get('side') == 'short':
+                # Short inventory is negative (we owe the asset). The cover is
+                # a reduce_only buy, so no balance gate applies — this keeps
+                # the bookkeeping consistent across restarts.
+                if current > -size:
+                    self.client._paper_balances[base] = -size
                     self.logger.info(
                         f"Reconciled paper balance for {base}: "
-                        f"{current:.6f} -> {size:.6f} (open position in {pair})"
+                        f"{current:.6f} -> {-size:.6f} (open SHORT in {pair})"
                     )
+            elif current < size:
+                self.client._paper_balances[base] = size
+                self.logger.info(
+                    f"Reconciled paper balance for {base}: "
+                    f"{current:.6f} -> {size:.6f} (open position in {pair})"
+                )
 
         # Also reconcile USD balance so new entry orders don't fail
         # when the real Kraken balance is smaller than the paper capital.
@@ -668,6 +683,10 @@ class ScalpingTrader:
             dict with order details, or None if order failed.
         """
         order_side = OrderSide.BUY if side == "long" else OrderSide.SELL
+        # A short entry sells an asset we don't hold: on Kraken that must be a
+        # margin order (leverage set) or the exchange rejects it. Longs stay
+        # plain spot orders.
+        margin_kwargs = {"leverage": self.short_leverage} if side == "short" else {}
         try:
             if self.use_maker_orders:
                 order = self.client.place_maker_order(
@@ -675,6 +694,7 @@ class ScalpingTrader:
                     side=order_side,
                     volume=size,
                     price_offset_percent=self.maker_price_offset,
+                    **margin_kwargs,
                 )
             else:
                 order = self.client.place_order(
@@ -682,6 +702,7 @@ class ScalpingTrader:
                     side=order_side,
                     order_type=OrderType.MARKET,
                     volume=size,
+                    **margin_kwargs,
                 )
 
             self.logger.info(
@@ -719,6 +740,14 @@ class ScalpingTrader:
         """
         # To close: sell if long, buy if short
         order_side = OrderSide.SELL if side == "long" else OrderSide.BUY
+        # Covering a short must also carry leverage so Kraken nets it against
+        # the open margin position (a plain buy would be a spot purchase).
+        # reduce_only guarantees the cover can only close — a size mismatch
+        # can never flip us into an unintended long margin position.
+        margin_kwargs = (
+            {"leverage": self.short_leverage, "reduce_only": True}
+            if side == "short" else {}
+        )
         try:
             if self.use_maker_orders:
                 order = self.client.place_maker_order(
@@ -726,6 +755,7 @@ class ScalpingTrader:
                     side=order_side,
                     volume=size,
                     price_offset_percent=self.maker_price_offset,
+                    **margin_kwargs,
                 )
             else:
                 order = self.client.place_order(
@@ -733,6 +763,7 @@ class ScalpingTrader:
                     side=order_side,
                     order_type=OrderType.MARKET,
                     volume=size,
+                    **margin_kwargs,
                 )
 
             self.logger.info(

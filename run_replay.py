@@ -78,7 +78,9 @@ class ReplayKrakenClient(KrakenClient):
     def get_balances(self) -> dict:
         return {"USD": Balance(asset="USD", total=self._paper_balances.get("USD", 0), available=self._paper_balances.get("USD", 0))}
 
-    def place_order(self, pair, side, order_type, volume, price=None, stop_price=None, validate_only=False, post_only=False) -> Order:
+    # **kwargs absorbs margin params (leverage/reduce_only) the trader passes
+    # for shorts — fills here are simulated, so they have no replay effect.
+    def place_order(self, pair, side, order_type, volume, price=None, stop_price=None, validate_only=False, post_only=False, **kwargs) -> Order:
         self._paper_order_counter += 1
         pair_key = pair.replace("/", "_")
         candles = self._candle_data.get(pair_key, [])
@@ -103,7 +105,7 @@ class ReplayKrakenClient(KrakenClient):
             cost=fill_price * volume, fee=fee,
         )
 
-    def place_maker_order(self, pair, side, volume, price_offset_percent=0.0) -> Order:
+    def place_maker_order(self, pair, side, volume, price_offset_percent=0.0, **kwargs) -> Order:
         return self.place_order(pair, side, OrderType.LIMIT, volume)
 
     def close(self):

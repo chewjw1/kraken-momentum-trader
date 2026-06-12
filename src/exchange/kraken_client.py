@@ -173,6 +173,10 @@ class KrakenClient:
         self._paper_order_counter = 0
         self._paper_balances_initialized = False
 
+        # Per-pair price decimals from AssetPairs (Kraken rejects prices finer
+        # than pair_decimals — e.g. BTC/USD allows only 1 decimal). Lazy cache.
+        self._pair_decimals: dict[str, int] = {}
+
         # If paper trading with valid credentials, fetch real balances
         if paper_trading and self._api_key and self._api_secret:
             self._init_paper_balances_from_real()
@@ -430,7 +434,9 @@ class KrakenClient:
         price: Optional[float] = None,
         stop_price: Optional[float] = None,
         validate_only: bool = False,
-        post_only: bool = False
+        post_only: bool = False,
+        leverage: Optional[int] = None,
+        reduce_only: bool = False
     ) -> Order:
         """
         Place an order.
@@ -445,6 +451,11 @@ class KrakenClient:
             validate_only: If True, validate but don't submit.
             post_only: If True, order will only be placed if it would be a maker order.
                        Rejected if it would take liquidity. Guarantees 0.16% maker fee.
+            leverage: Margin leverage (e.g. 2). Required to open/close short
+                      positions on Kraken spot margin; omit for plain spot orders.
+            reduce_only: If True, order may only reduce an existing margin
+                         position (used when covering shorts so a size mismatch
+                         can never flip into an unintended long margin position).
 
         Returns:
             The placed Order.
@@ -457,11 +468,16 @@ class KrakenClient:
             amount=volume,
             order_type=order_type.value,
             paper_trading=self.paper_trading,
-            post_only=post_only
+            post_only=post_only,
+            leverage=leverage or 0,
+            reduce_only=reduce_only
         )
 
         if self.paper_trading:
-            return self._place_paper_order(pair, side, order_type, volume, price, post_only)
+            return self._place_paper_order(
+                pair, side, order_type, volume, price, post_only,
+                leverage=leverage, reduce_only=reduce_only,
+            )
 
         kraken_pair = self._normalize_pair(pair)
 
@@ -484,6 +500,14 @@ class KrakenClient:
         # Post-only flag ensures maker fee (0.16% instead of 0.26%)
         if post_only and order_type == OrderType.LIMIT:
             data["oflags"] = "post"
+
+        # Margin params (shorts). Kraken requires leverage on BOTH the opening
+        # sell and the covering buy so the buy nets against the margin position
+        # instead of executing as a spot purchase.
+        if leverage:
+            data["leverage"] = str(leverage)
+        if reduce_only:
+            data["reduce_only"] = "true"
 
         result = self._request("POST", "private/AddOrder", data, private=True)
 
@@ -508,7 +532,9 @@ class KrakenClient:
         pair: str,
         side: OrderSide,
         volume: float,
-        price_offset_percent: float = 0.0
+        price_offset_percent: float = 0.0,
+        leverage: Optional[int] = None,
+        reduce_only: bool = False
     ) -> Order:
         """
         Place a maker (limit) order to get lower fees (0.16% vs 0.26%).
@@ -521,6 +547,8 @@ class KrakenClient:
             side: Buy or sell.
             volume: Order volume.
             price_offset_percent: Offset from bid/ask (0.0 = at bid/ask, 0.1 = 0.1% better)
+            leverage: Margin leverage — required for short entries/covers.
+            reduce_only: Restrict order to reducing an existing margin position.
 
         Returns:
             The placed Order.
@@ -534,14 +562,40 @@ class KrakenClient:
             # Place at ask or slightly above for better fill priority
             price = ticker.ask * (1 + price_offset_percent / 100)
 
+        # Round to the pair's allowed price precision. A blanket round(_, 2)
+        # breaks both extremes: BTC/USD only allows 1 decimal (live order would
+        # be rejected as invalid price) and POL/USD allows 5 (rounding $0.084
+        # to $0.08 is a 5% mispricing that distorts paper fills).
         return self.place_order(
             pair=pair,
             side=side,
             order_type=OrderType.LIMIT,
             volume=volume,
-            price=round(price, 2),  # Round to cents for USD pairs
-            post_only=True
+            price=round(price, self._get_pair_decimals(pair)),
+            post_only=True,
+            leverage=leverage,
+            reduce_only=reduce_only
         )
+
+    def _get_pair_decimals(self, pair: str) -> int:
+        """
+        Price decimals Kraken accepts for a pair (AssetPairs.pair_decimals),
+        cached after first lookup. Falls back to the legacy value of 2 if the
+        lookup fails so order placement degrades rather than breaks.
+        """
+        if pair not in self._pair_decimals:
+            try:
+                result = self._request(
+                    "GET", "public/AssetPairs", {"pair": self._normalize_pair(pair)}
+                )
+                info = list(result.values())[0]
+                self._pair_decimals[pair] = int(info["pair_decimals"])
+            except Exception as e:
+                logger.warning(
+                    f"Could not fetch pair_decimals for {pair}, defaulting to 2: {e}"
+                )
+                self._pair_decimals[pair] = 2
+        return self._pair_decimals[pair]
 
     def cancel_order(self, order_id: str) -> bool:
         """
@@ -638,9 +692,18 @@ class KrakenClient:
         order_type: OrderType,
         volume: float,
         price: Optional[float],
-        post_only: bool = False
+        post_only: bool = False,
+        leverage: Optional[int] = None,
+        reduce_only: bool = False
     ) -> Order:
-        """Simulate order placement in paper trading mode."""
+        """Simulate order placement in paper trading mode.
+
+        Margin semantics: leverage is accepted (and logged via place_order) but
+        does not change paper bookkeeping — volume/notional are already sized
+        by the strategy layer. reduce_only marks an order as closing an
+        existing position, which bypasses the spot balance gate (covering a
+        short is not a funded spot purchase).
+        """
         # Get current price if not specified
         if price is None:
             ticker = self.get_ticker(pair)
@@ -656,7 +719,9 @@ class KrakenClient:
         base, quote = pair.split("/")
 
         if side == OrderSide.BUY:
-            if self._paper_balances.get(quote, 0) < cost + fee:
+            # reduce_only buys cover an open short — they net against the
+            # margin position, so the spot USD balance gate does not apply.
+            if not reduce_only and self._paper_balances.get(quote, 0) < cost + fee:
                 raise KrakenAPIError("Insufficient balance for paper trade")
             self._paper_balances[quote] = self._paper_balances.get(quote, 0) - cost - fee
             self._paper_balances[base] = self._paper_balances.get(base, 0) + volume

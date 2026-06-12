@@ -83,6 +83,13 @@ trailing_stops:
 shorting:
   enabled: true
   min_confirmations: 3
+  # Kraken spot shorts are margin orders; the exchange requires leverage >= 2
+  # to open one. Position SIZE is unchanged (volume is set by the strategy) —
+  # leverage only determines collateral. NOTE: Kraken charges a margin
+  # rollover fee (~0.02% per 4h) on open margin positions; neither paper
+  # trading nor replay models it, so multi-day shorts cost ~0.12%/day more
+  # in live than simulated.
+  leverage: 2
 
 # Trading pairs — ordered by realistic validated performance
 # Each pair uses its best-performing interval (4h or 12h)

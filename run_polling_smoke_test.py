@@ -108,7 +108,7 @@ class PollingMockClient(KrakenClient):
             cost=fill_price * volume, fee=fee,
         )
 
-    def place_maker_order(self, pair, side, volume, price_offset_percent=0.0):
+    def place_maker_order(self, pair, side, volume, price_offset_percent=0.0, **kwargs):
         return self.place_order(pair, side, OrderType.LIMIT, volume)
 
     def close(self):
