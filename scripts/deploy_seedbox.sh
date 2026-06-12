@@ -20,9 +20,11 @@
 #                                   dashboard HTTP 200 + zero ERROR log lines
 #
 # Usage:
-#   ./scripts/deploy_seedbox.sh                 # deploy current branch
+#   ./scripts/deploy_seedbox.sh                 # deploy current branch (PAPER)
 #   ./scripts/deploy_seedbox.sh --fresh         # also wipe data/scalping state
 #   ./scripts/deploy_seedbox.sh --quick         # faster preflight (~30s)
+#   ./scripts/deploy_seedbox.sh --live          # REAL MONEY (typed confirm +
+#                                               #  real-API dry-run validation)
 #   DEPLOY_BRANCH=main ./scripts/deploy_seedbox.sh   # deploy another branch
 # =============================================================================
 set -euo pipefail
@@ -32,14 +34,32 @@ BRANCH="${DEPLOY_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
 PORT=44485
 SESSION=trader
 FRESH=0
+LIVE=0
 PREFLIGHT_ARGS=""
 for arg in "$@"; do
     case "$arg" in
         --fresh) FRESH=1 ;;
         --quick) PREFLIGHT_ARGS="--quick" ;;
-        *) echo "unknown arg: $arg (valid: --fresh --quick)"; exit 2 ;;
+        --live)  LIVE=1 ;;
+        *) echo "unknown arg: $arg (valid: --fresh --quick --live)"; exit 2 ;;
     esac
 done
+
+if [ "$LIVE" -eq 1 ]; then
+    echo
+    echo "##############################################################"
+    echo "#  LIVE MODE: this trades REAL MONEY on your Kraken account  #"
+    echo "#  - margin shorts (leverage) will be opened                 #"
+    echo "#  - server-side stop orders will rest on the exchange       #"
+    echo "#  - unknown margin shorts on the account will be FLATTENED  #"
+    echo "##############################################################"
+    printf 'Type LIVE to continue: '
+    read -r CONFIRM
+    if [ "$CONFIRM" != "LIVE" ]; then
+        echo "Aborted."
+        exit 1
+    fi
+fi
 
 step() { echo; echo "==== [$1] $2"; }
 
@@ -50,6 +70,12 @@ echo "  at commit: $(git log --oneline -1)"
 
 step 2/6 "Preflight gate (real-stack e2e — aborts deploy on failure)"
 python3 run_preflight.py $PREFLIGHT_ARGS
+
+if [ "$LIVE" -eq 1 ]; then
+    echo
+    echo "==== [2b/6] LIVE gate: validating order shapes against REAL Kraken (validate=true, nothing executes)"
+    python3 scripts/validate_live_order.py
+fi
 
 step 3/6 "Stop old trader (any launcher: screen/tmux/nohup)"
 pkill -f run_scalping_live.py 2>/dev/null && echo "  killed running trader" || echo "  none running"
@@ -82,9 +108,15 @@ if [ "$FRESH" -eq 1 ]; then
 fi
 mkdir -p logs
 
-step 5/6 "Start trader in screen session '$SESSION'"
+MODE_FLAG=""
+MODE_NAME="PAPER"
+if [ "$LIVE" -eq 1 ]; then
+    MODE_FLAG="--live"
+    MODE_NAME="LIVE (REAL MONEY)"
+fi
+step 5/6 "Start trader in screen session '$SESSION' [$MODE_NAME]"
 LOG="logs/trader_$(date +%Y%m%d_%H%M%S).log"
-screen -dmS "$SESSION" bash -c "cd '$PWD' && python3 run_scalping_live.py 2>&1 | tee -a '$LOG'"
+screen -dmS "$SESSION" bash -c "cd '$PWD' && python3 run_scalping_live.py $MODE_FLAG 2>&1 | tee -a '$LOG'"
 echo "  log: $LOG"
 
 step 6/6 "Verify startup (waiting for first full cycle, up to 180s)"
@@ -128,7 +160,7 @@ echo "  zero ERROR lines in first cycle"
 
 echo
 echo "=============================================================="
-echo "  DEPLOY OK — commit $(git rev-parse --short HEAD) running in screen '$SESSION'"
+echo "  DEPLOY OK [$MODE_NAME] — commit $(git rev-parse --short HEAD) running in screen '$SESSION'"
 echo "  watch:  screen -r $SESSION   (Ctrl-A D to detach)"
 echo "  log:    tail -f $LOG"
 echo "  web:    http://<seedbox>:$PORT"

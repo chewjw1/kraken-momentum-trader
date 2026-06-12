@@ -30,8 +30,15 @@ Stages:
                            through the real engine (the short-rejection class)
   5. Live payload contract AddOrder payloads captured at the HTTP boundary:
                            leverage/reduce_only on shorts, none on longs,
-                           pair_decimals price precision (BTC=1dp, POL=5dp)
-  6. Mini live loop        sliding 720 window + in-progress stubs served as
+                           pair_decimals price precision (BTC=1dp, POL=5dp),
+                           BOT_USERREF tagging
+  6. Live order lifecycle  scripted exchange: slow/partial/never fills,
+                           post-only rejections, market fallbacks, lot/min
+                           volume guards, margin eligibility, server-side
+                           disaster stops (cancel-before-exit + already-
+                           triggered settle), startup reconciliation (ghosts,
+                           orphans, stale orders), drift check
+  7. Mini live loop        sliding 720 window + in-progress stubs served as
                            raw Kraken JSON through the real client; zero
                            logger.error tolerated; state.json written; restart
                            trader reloads it; dashboard renders the real state
@@ -67,11 +74,22 @@ from src.observability.logger import configure_logging  # noqa: E402
 
 configure_logging(level="CRITICAL", format_type="json")
 
-# Realistic Kraken pair_decimals (price precision). BTC/USD really is 1.
-PAIR_DECIMALS = {
-    "XBTUSD": 1, "ETHUSD": 2, "SOLUSD": 2, "AVAXUSD": 3, "LINKUSD": 3,
-    "NEARUSD": 4, "ATOMUSD": 4, "DOTUSD": 4, "XRPUSD": 5, "POLUSD": 5,
+# Realistic Kraken AssetPairs constraints. BTC/USD price precision really is
+# 1 decimal. POLUSD is given NO margin support so the short-eligibility block
+# has a real negative case to catch.
+ASSET_META = {
+    "XBTUSD":  {"pair_decimals": 1, "lot_decimals": 8, "ordermin": 0.00005, "lev": [2, 3, 4, 5]},
+    "ETHUSD":  {"pair_decimals": 2, "lot_decimals": 8, "ordermin": 0.002,   "lev": [2, 3, 4, 5]},
+    "SOLUSD":  {"pair_decimals": 2, "lot_decimals": 8, "ordermin": 0.02,    "lev": [2, 3]},
+    "AVAXUSD": {"pair_decimals": 3, "lot_decimals": 8, "ordermin": 0.1,     "lev": [2, 3]},
+    "LINKUSD": {"pair_decimals": 3, "lot_decimals": 8, "ordermin": 0.1,     "lev": [2, 3]},
+    "NEARUSD": {"pair_decimals": 4, "lot_decimals": 8, "ordermin": 1.0,     "lev": [2, 3]},
+    "ATOMUSD": {"pair_decimals": 4, "lot_decimals": 8, "ordermin": 0.5,     "lev": [2, 3]},
+    "DOTUSD":  {"pair_decimals": 4, "lot_decimals": 8, "ordermin": 0.2,     "lev": [2, 3]},
+    "XRPUSD":  {"pair_decimals": 5, "lot_decimals": 8, "ordermin": 2.5,     "lev": [2, 3, 4, 5]},
+    "POLUSD":  {"pair_decimals": 5, "lot_decimals": 8, "ordermin": 10.0,    "lev": []},
 }
+PAIR_DECIMALS = {k: v["pair_decimals"] for k, v in ASSET_META.items()}
 
 
 # ============================================================================
@@ -151,8 +169,8 @@ class MarketSim:
 
 
 class FakeResponse:
-    def __init__(self, result):
-        self._body = {"error": [], "result": result}
+    def __init__(self, result, errors=None):
+        self._body = {"error": errors or [], "result": result}
 
     def raise_for_status(self):
         pass
@@ -162,17 +180,48 @@ class FakeResponse:
 
 
 class FakeKrakenSession:
-    """Drop-in for requests.Session serving Kraken-shaped JSON envelopes.
+    """Drop-in for requests.Session serving Kraken-shaped JSON envelopes,
+    including a scriptable order book for live-lifecycle testing.
 
-    Anything the code requests that isn't modeled here raises immediately —
-    new API usage must be added consciously, not silently no-opped.
+    Fill plans (consumed by LIMIT orders in placement sequence):
+        ("instant",)        fill fully on placement
+        ("after", n)        fill fully after n QueryOrders polls
+        ("partial", frac)   fill `frac` immediately, then sit open forever
+        ("never",)          sit open, zero filled
+    Market orders always fill instantly; stop-loss orders rest until
+    trigger_stop() is called. Anything the code requests that isn't modeled
+    here raises immediately — new API usage must be added consciously.
     """
     sim: MarketSim = None          # shared across instances (class attr)
     add_order_payloads: list = []  # captured private/AddOrder form data
     private_headers: list = []     # captured auth headers for signing checks
+    orders: dict = {}              # txid -> order record (live order book)
+    order_seq: list = [0]
+    fill_plans: list = []          # queue of plans for upcoming LIMIT orders
+    postonly_rejects: list = [0]   # reject next N post-only placements
+    open_positions: dict = {}      # served by private/OpenPositions
+    balances: dict = {"ZUSD": "10000.0000"}
 
     def __init__(self):
         self.headers = {}
+
+    @classmethod
+    def reset_book(cls):
+        cls.orders = {}
+        cls.fill_plans = []
+        cls.postonly_rejects = [0]
+        cls.open_positions = {}
+        cls.balances = {"ZUSD": "10000.0000"}
+        cls.add_order_payloads = []
+
+    @classmethod
+    def trigger_stop(cls, txid, price):
+        """Simulate a resting stop-loss executing on the exchange."""
+        rec = cls.orders[txid]
+        rec["status"] = "closed"
+        rec["vol_exec"] = rec["vol"]
+        rec["avg_price"] = price
+        rec["fee"] = price * rec["vol"] * 0.0026
 
     # requests.Session API surface used by KrakenClient ----------------------
     def get(self, url, params=None, headers=None):
@@ -186,8 +235,71 @@ class FakeKrakenSession:
     def close(self):
         pass
 
+    # order book helpers ------------------------------------------------------
+    def _last_price(self, pair_key):
+        try:
+            return float(self.sim.ticker_payload(pair_key)["c"][0])
+        except Exception:
+            return 0.0
+
+    def _fill(self, rec, frac=1.0):
+        rec["vol_exec"] = rec["vol"] * frac
+        px = rec["limit_price"] if rec["limit_price"] else self._last_price(rec["pair"])
+        rec["avg_price"] = px
+        fee_rate = 0.0016 if rec.get("post") else 0.0026
+        rec["fee"] = px * rec["vol_exec"] * fee_rate
+        if frac >= 0.999:
+            rec["status"] = "closed"
+
+    def _order_view(self, rec):
+        return {
+            "status": rec["status"],
+            "vol": str(rec["vol"]),
+            "vol_exec": str(rec["vol_exec"]),
+            "price": str(rec["avg_price"]),
+            "fee": str(rec["fee"]),
+            "userref": rec["userref"],
+            "descr": {"pair": rec["pair"], "type": rec["type"],
+                      "ordertype": rec["ordertype"],
+                      "price": str(rec["limit_price"] or 0)},
+        }
+
+    def _add_order(self, data):
+        cls = FakeKrakenSession
+        cls.add_order_payloads.append(dict(data))
+        if data.get("oflags") == "post" and cls.postonly_rejects[0] > 0:
+            cls.postonly_rejects[0] -= 1
+            return FakeResponse(None, errors=["EOrder:Post only order"])
+        cls.order_seq[0] += 1
+        txid = f"PF-{cls.order_seq[0]:04d}"
+        rec = {
+            "pair": data["pair"], "type": data["type"],
+            "ordertype": data["ordertype"], "vol": float(data["volume"]),
+            "vol_exec": 0.0, "avg_price": 0.0, "fee": 0.0,
+            "limit_price": float(data["price"]) if data.get("price") else None,
+            "post": data.get("oflags") == "post",
+            "userref": int(data.get("userref", 0) or 0),
+            "status": "open", "queries": 0, "plan": ("instant",),
+        }
+        if data.get("validate"):
+            return FakeResponse({"descr": {"order": "validated"}})
+        if rec["ordertype"] == "market":
+            self._fill(rec)                       # market: instant, always
+        elif rec["ordertype"] == "stop-loss":
+            pass                                  # rests until trigger_stop()
+        else:                                     # limit: consume the plan queue
+            plan = cls.fill_plans.pop(0) if cls.fill_plans else ("instant",)
+            rec["plan"] = plan
+            if plan[0] == "instant":
+                self._fill(rec)
+            elif plan[0] == "partial":
+                self._fill(rec, plan[1])
+        cls.orders[txid] = rec
+        return FakeResponse({"txid": [txid], "descr": {"order": "preflight"}})
+
     # routing -----------------------------------------------------------------
     def _route(self, url, data):
+        cls = FakeKrakenSession
         endpoint = url.split("/0/")[-1]
         if endpoint == "public/Time":
             now = int(self.sim.now().timestamp())
@@ -205,13 +317,49 @@ class FakeKrakenSession:
             return FakeResponse({pair: self.sim.ohlc_payload(pair), "last": 0})
         if endpoint == "public/AssetPairs":
             pair = data["pair"]
-            return FakeResponse({pair: {"pair_decimals": PAIR_DECIMALS.get(pair, 2)}})
+            meta = ASSET_META.get(pair, {"pair_decimals": 2, "lot_decimals": 8,
+                                         "ordermin": 0, "lev": [2]})
+            return FakeResponse({pair: {
+                "pair_decimals": meta["pair_decimals"],
+                "lot_decimals": meta["lot_decimals"],
+                "ordermin": str(meta["ordermin"]),
+                "leverage_buy": meta["lev"],
+                "leverage_sell": meta["lev"],
+            }})
         if endpoint == "private/Balance":
-            return FakeResponse({"ZUSD": "10000.0000"})
+            return FakeResponse(dict(cls.balances))
         if endpoint == "private/AddOrder":
-            FakeKrakenSession.add_order_payloads.append(dict(data))
-            n = len(FakeKrakenSession.add_order_payloads)
-            return FakeResponse({"txid": [f"PF-{n:04d}"], "descr": {"order": "preflight"}})
+            return self._add_order(data)
+        if endpoint == "private/QueryOrders":
+            txid = data["txid"]
+            rec = cls.orders.get(txid)
+            if rec is None:
+                return FakeResponse(None, errors=["EOrder:Unknown order"])
+            rec["queries"] += 1
+            if (rec["status"] == "open" and rec["plan"][0] == "after"
+                    and rec["queries"] >= rec["plan"][1]):
+                self._fill(rec)
+            return FakeResponse({txid: self._order_view(rec)})
+        if endpoint == "private/CancelOrder":
+            rec = cls.orders.get(data["txid"])
+            if rec is None or rec["status"] == "closed":
+                return FakeResponse(None, errors=["EOrder:Unknown order"])
+            rec["status"] = "canceled"
+            return FakeResponse({"count": 1})
+        if endpoint == "private/OpenOrders":
+            want_ref = data.get("userref")
+            out = {t: self._order_view(r) for t, r in cls.orders.items()
+                   if r["status"] in ("open", "pending")
+                   and (want_ref is None or str(r["userref"]) == str(want_ref))}
+            return FakeResponse({"open": out})
+        if endpoint == "private/ClosedOrders":
+            want_ref = data.get("userref")
+            out = {t: self._order_view(r) for t, r in cls.orders.items()
+                   if r["status"] in ("closed", "canceled")
+                   and (want_ref is None or str(r["userref"]) == str(want_ref))}
+            return FakeResponse({"closed": out})
+        if endpoint == "private/OpenPositions":
+            return FakeResponse(dict(cls.open_positions))
         raise AssertionError(f"PREFLIGHT: unmocked Kraken endpoint '{endpoint}'")
 
 
@@ -434,7 +582,212 @@ def stage_live_payloads():
 
     check(all("API-Sign" in h for h in FakeKrakenSession.private_headers[-5:]),
           "all AddOrder requests signed")
+    check(all(pl.get("userref") == str(live.BOT_USERREF)
+              for pl in FakeKrakenSession.add_order_payloads),
+          "all live orders tagged with BOT_USERREF")
     live.close()
+
+
+def stage_live_lifecycle():
+    stage("LIVE order lifecycle — fills, stops, reconciliation (scripted exchange)")
+    from src.exchange.kraken_client import KrakenClient
+    from run_scalping_live import ScalpingTrader
+    S = FakeKrakenSession
+    S.reset_book()
+
+    def live_trader(d):
+        t = ScalpingTrader(config_path="config/scalping.yaml",
+                           data_dir=str(d), paper_trading=False)
+        t.client._rate_limiter = NoopRateLimiter()
+        t._now = S.sim.now
+        t._sleep = lambda s: None
+        return t
+
+    def payloads_for(pair_key, **filters):
+        out = []
+        for p in S.add_order_payloads:
+            if p.get("pair") != pair_key:
+                continue
+            if all(p.get(k) == v for k, v in filters.items()):
+                out.append(p)
+        return out
+
+    d1 = Path(tempfile.mkdtemp(prefix="preflight_live1_"))
+    d2 = Path(tempfile.mkdtemp(prefix="preflight_live2_"))
+    try:
+        trader = live_trader(d1)
+        check(not trader.client.paper_trading, "trader booted in LIVE mode")
+        check("POL/USD" in trader._short_blocked_pairs,
+              "startup eligibility report flags POL/USD (no margin support)")
+
+        # --- fills -----------------------------------------------------------
+        S.fill_plans = [("instant",)]
+        r = trader._execute_entry_order("ETH/USD", "long", 0.5, 0.0)
+        check(r is not None and abs(r['fill_volume'] - 0.5) < 1e-9
+              and r['fill_price'] > 0 and r['fee'] > 0,
+              "instant maker fill returns actual price/volume/fee", str(r))
+
+        S.fill_plans = [("after", 3)]
+        r = trader._execute_entry_order("NEAR/USD", "short", 300.0, 0.0)
+        check(r is not None and abs(r['fill_volume'] - 300.0) < 1e-9,
+              "slow maker fill (3 polls) awaited to completion")
+
+        S.fill_plans = [("partial", 0.4)]
+        r = trader._execute_entry_order("DOT/USD", "long", 100.0, 0.0)
+        partial_rec = [rec for rec in S.orders.values()
+                       if rec["pair"] == "DOTUSD" and rec["ordertype"] == "limit"][-1]
+        check(r is not None and abs(r['fill_volume'] - 40.0) < 1e-6,
+              "partial entry kept at filled size (40/100)", str(r))
+        check(partial_rec["status"] == "canceled",
+              "unfilled entry remainder cancelled on the exchange")
+
+        S.fill_plans = [("never",)]
+        n_before = len(S.add_order_payloads)
+        r = trader._execute_entry_order("LINK/USD", "long", 10.0, 0.0)
+        mkts = [p for p in S.add_order_payloads[n_before:]
+                if p.get("ordertype") == "market"]
+        check(r is not None and len(mkts) == 1 and abs(r['fill_volume'] - 10.0) < 1e-9,
+              "unfilled entry falls back to market when configured")
+
+        trader.live_entry_market_fallback = False
+        S.fill_plans = [("never",)]
+        n_before = len(S.add_order_payloads)
+        r = trader._execute_entry_order("LINK/USD", "long", 10.0, 0.0)
+        mkts = [p for p in S.add_order_payloads[n_before:]
+                if p.get("ordertype") == "market"]
+        check(r is None and not mkts,
+              "unfilled entry skipped (no market) when fallback disabled")
+        trader.live_entry_market_fallback = True
+
+        S.fill_plans = [("partial", 0.5)]
+        r = trader._execute_exit_order("ETH/USD", "long", 0.5)
+        check(r is not None and abs(r['fill_volume'] - 0.5) < 1e-9
+              and "+" in r['order_id'],
+              "partially-filled EXIT completed via market remainder", str(r))
+
+        S.postonly_rejects = [1]
+        S.fill_plans = [("instant",)]
+        n_before = len(S.add_order_payloads)
+        r = trader._execute_entry_order("XRP/USD", "long", 50.0, 0.0)
+        check(r is not None and len(S.add_order_payloads) - n_before == 2,
+              "post-only rejection retried at fresh price")
+
+        S.postonly_rejects = [10]
+        n_before = len(S.add_order_payloads)
+        r = trader._execute_entry_order("XRP/USD", "long", 50.0, 0.0)
+        last = S.add_order_payloads[-1]
+        check(r is not None and last.get("ordertype") == "market",
+              "post-only retries exhausted -> market fallback")
+        S.postonly_rejects = [0]
+
+        # --- guards ----------------------------------------------------------
+        r = trader._execute_entry_order("POL/USD", "short", 1000.0, 0.0)
+        check(r is None, "short on margin-ineligible pair blocked")
+        r = trader._execute_entry_order("POL/USD", "long", 5.0, 0.0)
+        check(r is None, "order below pair minimum (ordermin) blocked")
+        S.fill_plans = [("instant",)]
+        trader._execute_entry_order("ETH/USD", "long", 0.123456789012345, 0.0)
+        sent_vol = S.add_order_payloads[-1]["volume"]
+        dec = sent_vol.split(".")[1] if "." in sent_vol else ""
+        check(len(dec) <= 8, "volume rounded to lot_decimals", f"volume={sent_vol}")
+
+        # --- server-side disaster stop ----------------------------------------
+        def near_position():
+            return {'entry_price': 1.2, 'side': 'short', 'size': 300.0,
+                    'size_usd': 360.0,
+                    'entry_time': S.sim.now().isoformat(), 'reason': 'pf',
+                    'regime': 'bear', 'best_price': 1.2, 'trailing_stop': 0.0,
+                    'order_id': 'PF-ENTRY', 'entry_fee': 0.5}
+
+        trader.positions['NEAR/USD'] = near_position()
+        stop_id = trader._place_server_stop('NEAR/USD', 'short', 300.0, 1.2)
+        stop_rec = S.orders.get(stop_id, {})
+        check(stop_id is not None and stop_rec.get("ordertype") == "stop-loss"
+              and stop_rec.get("type") == "buy"
+              and abs((stop_rec.get("limit_price") or 0) - 1.32) < 1e-6,
+              "server stop: buy stop-loss at +10% of short entry",
+              f"trigger={stop_rec.get('limit_price')}")
+        stop_payload = payloads_for("NEARUSD", ordertype="stop-loss")[-1]
+        check(stop_payload.get("leverage") == "2"
+              and stop_payload.get("reduce_only") == "true",
+              "server stop carries leverage + reduce_only")
+
+        trader.positions['NEAR/USD']['stop_order_id'] = stop_id
+        ok = trader._close_position('NEAR/USD', 'Preflight TP', 1.1,
+                                    trader._get_strategy_for_pair('NEAR/USD'))
+        check(ok and 'NEAR/USD' not in trader.positions
+              and S.orders[stop_id]["status"] == "canceled",
+              "normal exit cancels the resting stop first")
+
+        trader.positions['NEAR/USD'] = near_position()
+        stop_id = trader._place_server_stop('NEAR/USD', 'short', 300.0, 1.2)
+        trader.positions['NEAR/USD']['stop_order_id'] = stop_id
+        S.trigger_stop(stop_id, 1.35)
+        n_before = len(S.add_order_payloads)
+        cap_before = trader.capital
+        ok = trader._close_position('NEAR/USD', 'Disaster stop', 1.30,
+                                    trader._get_strategy_for_pair('NEAR/USD'))
+        check(ok and 'NEAR/USD' not in trader.positions
+              and len(S.add_order_payloads) == n_before
+              and trader.capital < cap_before,
+              "already-triggered stop settled from its fill, no duplicate exit",
+              f"P&L ${trader.capital - cap_before:+.2f}")
+
+        # --- startup reconciliation -------------------------------------------
+        S.reset_book()
+        ghost_state = {
+            'positions': {
+                'ETH/USD': {'entry_price': 2000.0, 'side': 'long', 'size': 0.5,
+                            'size_usd': 1000.0, 'entry_time': S.sim.now().isoformat(),
+                            'reason': 'x', 'regime': 'bull', 'best_price': 2000.0,
+                            'trailing_stop': 0.0, 'order_id': 'OLD-1', 'entry_fee': 1.0},
+                'NEAR/USD': {'entry_price': 1.2, 'side': 'short', 'size': 300.0,
+                             'size_usd': 360.0, 'entry_time': S.sim.now().isoformat(),
+                             'reason': 'x', 'regime': 'bear', 'best_price': 1.2,
+                             'trailing_stop': 0.0, 'order_id': 'OLD-2', 'entry_fee': 0.5},
+            },
+            'capital': 9000.0, 'initial_capital': 10000.0,
+            'metrics': {'total_trades': 5, 'wins': 3, 'losses': 2,
+                        'total_pnl': -1000.0, 'peak_capital': 10500.0,
+                        'start_time': S.sim.now().isoformat()},
+        }
+        (d2 / "state.json").write_text(json.dumps(ghost_state, default=str))
+        S.open_positions = {
+            "POS-1": {"pair": "NEARUSD", "type": "sell", "vol": "300", "vol_closed": "0"},
+            "POS-2": {"pair": "DOTUSD", "type": "sell", "vol": "50", "vol_closed": "0"},
+        }
+        stale = {"pair": "ETHUSD", "type": "buy", "ordertype": "limit", "vol": 1.0,
+                 "vol_exec": 0.0, "avg_price": 0.0, "fee": 0.0, "limit_price": 2000.0,
+                 "post": True, "status": "open", "queries": 0, "plan": ("never",)}
+        S.orders["STALE-BOT"] = dict(stale, userref=KrakenClient.BOT_USERREF)
+        S.orders["MANUAL-1"] = dict(stale, userref=0)
+
+        t2 = live_trader(d2)
+        check('ETH/USD' not in t2.positions,
+              "reconcile drops GHOST long (in state, not on exchange)")
+        check('NEAR/USD' in t2.positions,
+              "reconcile keeps short verified against OpenPositions")
+        check(S.orders["STALE-BOT"]["status"] == "canceled",
+              "stale bot order (our userref) cancelled at startup")
+        check(S.orders["MANUAL-1"]["status"] == "open",
+              "manual order (foreign userref) left untouched")
+        flatten = payloads_for("DOTUSD", ordertype="market", type="buy")
+        check(len(flatten) == 1 and flatten[0].get("reduce_only") == "true",
+              "orphan margin short flattened (market reduce_only buy)")
+        new_stop = t2.positions.get('NEAR/USD', {}).get('stop_order_id')
+        check(bool(new_stop) and S.orders.get(new_stop, {}).get("status") == "open",
+              "server stop re-armed for surviving position after restart")
+
+        try:
+            t2._check_live_drift()
+            check(True, "drift check runs clean on consistent state")
+        except Exception as e:
+            check(False, "drift check runs clean on consistent state", str(e))
+    finally:
+        S.reset_book()
+        S.open_positions = {}
+        shutil.rmtree(d1, ignore_errors=True)
+        shutil.rmtree(d2, ignore_errors=True)
 
 
 def stage_live_loop(state_dir: Path, span: int, polls: int):
@@ -563,6 +916,7 @@ def main():
         else:
             FAILURES.append("paper engine stage skipped (boot failed)")
         guarded(stage_live_payloads)
+        guarded(stage_live_lifecycle)
         guarded(stage_live_loop, loop_dir, span=span, polls=polls)
     finally:
         shutil.rmtree(state_dir, ignore_errors=True)

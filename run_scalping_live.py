@@ -189,6 +189,12 @@ class ScalpingTrader:
         self._regime_check_interval = regime_cfg.get('check_every_candles', 20)
         self._last_regime_candle_ts: Optional[datetime] = None
 
+        # Entry cooldown after a regime flip (0 = disabled). Forensics across
+        # Q4'24-Q1'26: trades entered within 20 candles of a flip lost -$2,010
+        # net (regime-flip chasing). Counts committed reference candles.
+        self.flip_entry_cooldown = int(regime_cfg.get('flip_entry_cooldown_candles', 0))
+        self._candles_since_flip = 10 ** 9  # no flip seen yet -> never blocks
+
         # Wall clock, injectable by test harnesses that simulate historical time
         # (used to detect Kraken's in-progress candle)
         self._now = lambda: datetime.now(timezone.utc)
@@ -238,6 +244,24 @@ class ScalpingTrader:
         # timestamp processed per pair; skip if unchanged.
         self._last_processed_candle_ts: Dict[str, datetime] = {}
 
+        # Live order-lifecycle settings (only consulted when paper_trading is
+        # False; paper fills are instant so none of this applies there).
+        live_cfg = self.config.get('live', {})
+        self.live_fill_timeout = float(live_cfg.get('fill_timeout_seconds', 120))
+        self.live_fill_poll = float(live_cfg.get('fill_poll_seconds', 5))
+        self.live_entry_market_fallback = bool(live_cfg.get('entry_fallback_to_market', True))
+        self.live_postonly_retries = int(live_cfg.get('max_postonly_retries', 2))
+        self.live_server_stop = bool(live_cfg.get('server_side_disaster_stop', True))
+        self.live_flatten_unknown_margin = bool(live_cfg.get('flatten_unknown_margin', True))
+        self.live_cancel_stale_orders = bool(live_cfg.get('cancel_stale_orders_on_start', True))
+        self.live_drift_check_cycles = int(live_cfg.get('drift_check_every_cycles', 60))
+        self._cycles_since_drift_check = 0
+        self._short_blocked_pairs: set = set()
+
+        # Injectable sleep (test harnesses replace with a no-op so fill-wait
+        # loops run deterministically without wall-clock delays)
+        self._sleep = time.sleep
+
         # Metrics
         self.metrics = {
             'total_trades': 0,
@@ -260,6 +284,14 @@ class ScalpingTrader:
 
         # Load saved state
         self._load_state()
+
+        # LIVE ONLY: reconcile saved state against the exchange's actual
+        # positions/orders. state.json can go stale while the process is down
+        # (stops triggered, manual intervention, liquidation) — trusting it
+        # blindly causes double entries and orphaned margin positions.
+        if not paper_trading:
+            self._reconcile_live_state()
+            self._report_short_eligibility()
 
         self.logger.info(
             "Scalping trader initialized",
@@ -547,6 +579,8 @@ class ScalpingTrader:
         if latest_ts != self._last_regime_candle_ts:
             self._last_regime_candle_ts = latest_ts
             self._regime_check_counter += 1
+            if self._candles_since_flip < 10 ** 9:
+                self._candles_since_flip += 1
         if self._regime_check_counter < self._regime_check_interval:
             return
         self._regime_check_counter = 0
@@ -570,6 +604,12 @@ class ScalpingTrader:
                 atr=f"{result.atr_pct:.2f}%",
                 adjustments=adjustments.get('description', ''),
             )
+
+            # Initial detection (UNKNOWN -> X) is bootstrapping, not a flip —
+            # otherwise every process restart would freeze entries for the
+            # cooldown window.
+            if self._current_regime != MarketRegime.UNKNOWN:
+                self._candles_since_flip = 0
 
             self._current_regime = result.regime
             self._regime_adjustments = adjustments
@@ -687,6 +727,30 @@ class ScalpingTrader:
         # margin order (leverage set) or the exchange rejects it. Longs stay
         # plain spot orders.
         margin_kwargs = {"leverage": self.short_leverage} if side == "short" else {}
+
+        if not self.paper_trading:
+            # Margin eligibility: not every Kraken pair supports margin. A
+            # short on an ineligible pair would be rejected by the exchange —
+            # block it here with a clear reason instead.
+            if side == "short":
+                usable = self.client.margin_leverage_for(
+                    pair, order_side, self.short_leverage)
+                if usable is None:
+                    if pair not in self._short_blocked_pairs:
+                        self._short_blocked_pairs.add(pair)
+                        self.logger.warning(
+                            f"SHORT BLOCKED for {pair} — no margin support on "
+                            f"Kraken (paper results for this pair's shorts do "
+                            f"not transfer to live)"
+                        )
+                    return None
+                margin_kwargs = {"leverage": usable}
+            return self._execute_live_order(
+                pair, order_side, size, margin_kwargs,
+                is_exit=False,
+                allow_market_fallback=self.live_entry_market_fallback,
+            )
+
         try:
             if self.use_maker_orders:
                 order = self.client.place_maker_order(
@@ -748,6 +812,15 @@ class ScalpingTrader:
             {"leverage": self.short_leverage, "reduce_only": True}
             if side == "short" else {}
         )
+
+        if not self.paper_trading:
+            # Exits ALWAYS fall back to a market order: failing to exit while
+            # price runs away costs more than any taker fee.
+            return self._execute_live_order(
+                pair, order_side, size, margin_kwargs,
+                is_exit=True, allow_market_fallback=True,
+            )
+
         try:
             if self.use_maker_orders:
                 order = self.client.place_maker_order(
@@ -785,6 +858,467 @@ class ScalpingTrader:
         except Exception as e:
             self.logger.error(f"EXIT ORDER FAILED for {pair}: {e}")
             return None
+
+    # =========================================================================
+    # LIVE order lifecycle (never used in paper mode — paper fills instantly)
+    # =========================================================================
+
+    def _execute_live_order(self, pair: str, order_side: OrderSide, volume: float,
+                            margin_kwargs: dict, is_exit: bool,
+                            allow_market_fallback: bool) -> Optional[dict]:
+        """
+        Place an order live and manage it to completion.
+
+        Live maker orders return 'open' — they rest on the book. This waits
+        for the fill, cancels on timeout, keeps partial entry fills, and falls
+        back to a market order where allowed (always, for exits). Returns the
+        same result dict shape as the paper path, with ACTUAL fill price,
+        volume, and fee from the exchange.
+        """
+        label = "EXIT" if is_exit else "ENTRY"
+        placed = None
+
+        if self.use_maker_orders:
+            # Post-only orders are REJECTED outright if price moved across our
+            # limit between the ticker fetch and placement — common in fast
+            # tape. place_maker_order re-fetches the ticker on each attempt.
+            for attempt in range(1 + self.live_postonly_retries):
+                try:
+                    placed = self.client.place_maker_order(
+                        pair=pair, side=order_side, volume=volume,
+                        price_offset_percent=self.maker_price_offset,
+                        **margin_kwargs,
+                    )
+                    break
+                except Exception as e:
+                    msg = str(e)
+                    if "Post only" in msg and attempt < self.live_postonly_retries:
+                        self.logger.info(
+                            f"{label} post-only rejected for {pair} (price moved), retrying"
+                        )
+                        continue
+                    if "below pair minimum" in msg:
+                        self.logger.warning(f"{label} skipped for {pair}: {msg}")
+                        return None
+                    self.logger.error(f"{label} maker placement failed for {pair}: {e}")
+                    break
+
+        if placed is None:
+            if self.use_maker_orders and not allow_market_fallback:
+                return None
+            return self._market_order_final(pair, order_side, volume,
+                                            margin_kwargs, label)
+
+        fill = self._await_live_fill(placed.order_id, self.live_fill_timeout)
+        if fill.get('status') == 'closed':
+            return self._fill_result(placed.order_id, fill, placed.price)
+
+        # Timed out / canceled / expired: cancel remainder, take final tally.
+        final = self._cancel_live_order_final(placed.order_id)
+        vol_exec = final.get('vol_exec', 0.0)
+
+        if vol_exec >= volume * 0.999:
+            return self._fill_result(placed.order_id, final, placed.price)
+
+        remaining = volume - vol_exec
+        if is_exit:
+            # An un-exited remainder is an open risk — market it, always.
+            self.logger.warning(
+                f"EXIT maker order for {pair} filled {vol_exec}/{volume} in "
+                f"{self.live_fill_timeout:.0f}s — market-ordering the remainder"
+            )
+            mkt = self._market_order_final(pair, order_side, remaining,
+                                           margin_kwargs, label)
+            if mkt is None:
+                if vol_exec > 0:
+                    self.logger.error(
+                        f"CRITICAL: {pair} exit partially filled ({vol_exec}) and market "
+                        f"remainder FAILED — position partially open on exchange"
+                    )
+                    return self._fill_result(placed.order_id, final, placed.price)
+                return None
+            if vol_exec > 0:
+                return self._combine_fills(
+                    self._fill_result(placed.order_id, final, placed.price), mkt)
+            return mkt
+
+        # Entry path
+        if vol_exec > 0:
+            self.logger.warning(
+                f"ENTRY maker order for {pair} partially filled "
+                f"({vol_exec}/{volume}) — keeping the partial as the position"
+            )
+            return self._fill_result(placed.order_id, final, placed.price)
+        if allow_market_fallback:
+            self.logger.info(
+                f"ENTRY maker order for {pair} unfilled after "
+                f"{self.live_fill_timeout:.0f}s — falling back to market (taker fee)"
+            )
+            return self._market_order_final(pair, order_side, volume,
+                                            margin_kwargs, label)
+        self.logger.info(f"ENTRY maker order for {pair} unfilled — skipping entry")
+        return None
+
+    def _market_order_final(self, pair: str, order_side: OrderSide, volume: float,
+                            margin_kwargs: dict, label: str) -> Optional[dict]:
+        """Place a market order and confirm its fill."""
+        try:
+            order = self.client.place_order(
+                pair=pair, side=order_side, order_type=OrderType.MARKET,
+                volume=volume, **margin_kwargs,
+            )
+        except Exception as e:
+            self.logger.error(f"{label} market order failed for {pair}: {e}")
+            return None
+        # Paper market orders fill synchronously; live ones near-instantly.
+        if order.status == "closed":
+            return {
+                'order_id': order.order_id,
+                'fill_price': order.price,
+                'fill_volume': order.filled_volume or volume,
+                'fee': order.fee,
+                'status': order.status,
+            }
+        fill = self._await_live_fill(order.order_id, timeout=30)
+        if fill.get('vol_exec', 0.0) <= 0:
+            self.logger.error(
+                f"CRITICAL: {label} market order {order.order_id} for {pair} "
+                f"did not fill — check exchange manually"
+            )
+            return None
+        return self._fill_result(order.order_id, fill, order.price)
+
+    def _await_live_fill(self, order_id: str, timeout: float) -> dict:
+        """Poll QueryOrders until the order reaches a terminal state."""
+        poll = max(self.live_fill_poll, 0.5)
+        polls = max(1, int(timeout / poll))
+        last: dict = {'status': 'unknown', 'vol_exec': 0.0, 'price': 0.0, 'fee': 0.0}
+        for i in range(polls):
+            try:
+                last = self.client.query_order(order_id)
+            except Exception as e:
+                self.logger.warning(f"Fill poll failed for {order_id}: {e}")
+            if last.get('status') in ('closed', 'canceled', 'expired'):
+                return last
+            if i < polls - 1:
+                self._sleep(poll)
+        return last
+
+    def _cancel_live_order_final(self, order_id: str) -> dict:
+        """Cancel an order and return its final state (fills can race cancels)."""
+        try:
+            self.client.cancel_order(order_id)
+        except Exception as e:
+            self.logger.warning(f"Cancel failed for {order_id} (may have just filled): {e}")
+        try:
+            return self.client.query_order(order_id)
+        except Exception as e:
+            self.logger.error(f"Could not query final state of {order_id}: {e}")
+            return {'status': 'unknown', 'vol_exec': 0.0, 'price': 0.0, 'fee': 0.0}
+
+    @staticmethod
+    def _fill_result(order_id: str, info: dict, fallback_price: Optional[float]) -> dict:
+        price = info.get('price', 0.0) or 0.0
+        if price <= 0 and fallback_price:
+            price = fallback_price
+        return {
+            'order_id': order_id,
+            'fill_price': price,
+            'fill_volume': info.get('vol_exec', 0.0),
+            'fee': info.get('fee', 0.0),
+            'status': info.get('status', 'unknown'),
+        }
+
+    @staticmethod
+    def _combine_fills(a: dict, b: dict) -> dict:
+        """Volume-weighted combination of two partial fills of the same intent."""
+        va, vb = a.get('fill_volume', 0.0), b.get('fill_volume', 0.0)
+        total = va + vb
+        price = ((a.get('fill_price', 0.0) * va + b.get('fill_price', 0.0) * vb) / total
+                 if total > 0 else a.get('fill_price', 0.0))
+        return {
+            'order_id': f"{a.get('order_id', '')}+{b.get('order_id', '')}",
+            'fill_price': price,
+            'fill_volume': total,
+            'fee': a.get('fee', 0.0) + b.get('fee', 0.0),
+            'status': 'closed',
+        }
+
+    # =========================================================================
+    # LIVE server-side disaster stop
+    # =========================================================================
+
+    def _place_server_stop(self, pair: str, side: str, volume: float,
+                           entry_price: float) -> Optional[str]:
+        """
+        Rest a stop-loss order ON THE EXCHANGE at the disaster-stop level.
+
+        The in-process disaster stop (checked every poll) remains the primary;
+        this is the backstop for the cases the process can't cover: crashes,
+        seedbox outages, flash moves between polls. It deliberately uses the
+        wide disaster level (default 10%), NOT the strategy's ATR stops —
+        normal exits stay with the validated candle-close logic.
+        """
+        if self.paper_trading or self.disaster_stop_pct <= 0 or not self.live_server_stop:
+            return None
+        try:
+            if side == "long":
+                stop_side = OrderSide.SELL
+                trigger = entry_price * (1 - self.disaster_stop_pct / 100)
+                kwargs = {}
+            else:
+                stop_side = OrderSide.BUY
+                trigger = entry_price * (1 + self.disaster_stop_pct / 100)
+                usable = self.client.margin_leverage_for(
+                    pair, OrderSide.SELL, self.short_leverage) or self.short_leverage
+                kwargs = {"leverage": usable, "reduce_only": True}
+            trigger = round(trigger, self.client._get_pair_decimals(pair))
+            order = self.client.place_order(
+                pair=pair, side=stop_side, order_type=OrderType.STOP_LOSS,
+                volume=volume, price=trigger, **kwargs,
+            )
+            self.logger.info(
+                f"Server-side disaster stop placed for {pair}",
+                trigger=trigger, side=stop_side.value, order_id=order.order_id,
+            )
+            return order.order_id
+        except Exception as e:
+            self.logger.error(
+                f"Could not place server-side disaster stop for {pair}: {e} — "
+                f"in-process disaster stop remains active"
+            )
+            return None
+
+    def _resolve_server_stop(self, pair: str, position: dict) -> tuple:
+        """
+        Before a strategy exit: cancel the resting server-side stop, or detect
+        that it already triggered while we weren't looking.
+
+        Returns (status, fill_info):
+          ('none', None)      — no stop existed
+          ('cancelled', None) — stop cancelled, proceed with exit order
+          ('filled', info)    — stop ALREADY EXECUTED: position is closed on
+                                the exchange; settle from the stop's fill, do
+                                NOT place an exit order.
+
+        If the true state can't be determined, proceeding with the exit is
+        benign: a surviving long-stop sells inventory we no longer hold (the
+        exchange rejects it) and a short-stop is reduce_only against a netted
+        position (no-op).
+        """
+        stop_id = position.get('stop_order_id')
+        if self.paper_trading or not stop_id:
+            return ('none', None)
+        try:
+            info = self.client.query_order(stop_id)
+            if info.get('status') == 'closed':
+                return ('filled', info)
+            if info.get('status') in ('canceled', 'expired'):
+                return ('none', None)
+            try:
+                self.client.cancel_order(stop_id)
+            except Exception as e:
+                self.logger.warning(f"Stop cancel failed for {pair}: {e}")
+            info = self.client.query_order(stop_id)
+            if info.get('status') == 'closed':
+                return ('filled', info)
+            return ('cancelled', None)
+        except Exception as e:
+            self.logger.warning(
+                f"Could not resolve server stop for {pair}: {e} — proceeding with exit"
+            )
+            return ('cancelled', None)
+
+    # =========================================================================
+    # LIVE state reconciliation & drift detection
+    # =========================================================================
+
+    def _kraken_pair_candidates(self, pair: str) -> set:
+        """All names Kraken may use for a pair ('BTC/USD' -> XBTUSD, XXBTZUSD)."""
+        base, quote = pair.split("/")
+        kb = "XBT" if base == "BTC" else base
+        return {f"{kb}{quote}", f"X{kb}Z{quote}", f"{kb}/{quote}"}
+
+    def _pair_from_kraken(self, kraken_name: str) -> Optional[str]:
+        for p in self.pairs:
+            if kraken_name in self._kraken_pair_candidates(p):
+                return p
+        return None
+
+    def _reconcile_live_state(self) -> None:
+        """
+        LIVE startup: make saved state agree with the exchange.
+
+        - Cancels stale resting orders carrying our BOT_USERREF (a dead
+          process leaves maker orders and stops on the book). Manual orders
+          (no userref tag) are never touched.
+        - Drops 'ghost' positions: in state.json but absent on the exchange
+          (stop triggered while down, manual close, liquidation).
+        - Flattens orphaned margin SHORTS: on the exchange but not in state —
+          unmonitored leverage bleeding rollover fees. Config-gated
+          (live.flatten_unknown_margin). Margin longs are never ours (the bot
+          opens spot longs only) so they are alerted, never touched. Spot
+          balances can be personal holdings and are never sold.
+        - Re-places server-side disaster stops for surviving positions.
+        """
+        self.logger.info("LIVE: reconciling saved state against exchange...")
+        try:
+            open_orders = self.client.get_open_orders_raw()
+            open_positions = self.client.get_open_positions()
+            balances = self.client.get_balances()
+        except Exception as e:
+            self.logger.error(
+                f"LIVE reconciliation could not fetch exchange state: {e} — "
+                f"continuing with saved state AS-IS; verify manually"
+            )
+            return
+
+        cancelled = 0
+        if self.live_cancel_stale_orders:
+            for txid, raw in open_orders.items():
+                if str(raw.get('userref', '')) == str(self.client.BOT_USERREF):
+                    try:
+                        self.client.cancel_order(txid)
+                        cancelled += 1
+                    except Exception as e:
+                        self.logger.warning(f"Could not cancel stale order {txid}: {e}")
+
+        margin_open = []
+        for ptxid, p in open_positions.items():
+            vol_open = float(p.get('vol', 0) or 0) - float(p.get('vol_closed', 0) or 0)
+            if vol_open > 0:
+                margin_open.append({
+                    'txid': ptxid, 'pair': p.get('pair', ''),
+                    'type': p.get('type', ''), 'vol': vol_open, 'matched': False,
+                })
+
+        ghosts = []
+        for pair in list(self.positions):
+            pos = self.positions[pair]
+            side = pos.get('side', 'long')
+            size = pos.get('size', 0)
+            if side == 'short':
+                cands = self._kraken_pair_candidates(pair)
+                match = next(
+                    (m for m in margin_open
+                     if not m['matched'] and m['type'] == 'sell'
+                     and m['pair'] in cands
+                     and abs(m['vol'] - size) <= max(size * 0.02, 1e-9)),
+                    None)
+                if match:
+                    match['matched'] = True
+                else:
+                    ghosts.append(pair)
+            else:
+                base = pair.split("/")[0]
+                bal = balances.get(base)
+                if bal is None or bal.total < size * 0.98:
+                    ghosts.append(pair)
+
+        for pair in ghosts:
+            self.logger.error(
+                f"CRITICAL: GHOST position {pair} in state.json but not on the "
+                f"exchange (closed externally while down?) — dropping from "
+                f"state. P&L for this trade is NOT recorded."
+            )
+            del self.positions[pair]
+
+        for m in margin_open:
+            if m['matched']:
+                continue
+            our_pair = self._pair_from_kraken(m['pair'])
+            if m['type'] == 'sell' and self.live_flatten_unknown_margin and our_pair:
+                self.logger.error(
+                    f"CRITICAL: ORPHAN margin short {m['pair']} vol={m['vol']} "
+                    f"on exchange but not in state — flattening (it bleeds "
+                    f"rollover fees and carries unmonitored risk)"
+                )
+                try:
+                    usable = self.client.margin_leverage_for(
+                        our_pair, OrderSide.SELL, self.short_leverage) or self.short_leverage
+                    self.client.place_order(
+                        pair=our_pair, side=OrderSide.BUY,
+                        order_type=OrderType.MARKET, volume=m['vol'],
+                        leverage=usable, reduce_only=True,
+                    )
+                except Exception as e:
+                    self.logger.error(f"CRITICAL: orphan flatten FAILED for {m['pair']}: {e}")
+            else:
+                self.logger.error(
+                    f"CRITICAL: unknown margin position on exchange: {m['pair']} "
+                    f"{m['type']} vol={m['vol']} — NOT touching it; review manually"
+                )
+
+        # Old stops were cancelled above; every surviving position needs one.
+        for pair, pos in self.positions.items():
+            stop_id = self._place_server_stop(
+                pair, pos.get('side', 'long'), pos.get('size', 0),
+                pos.get('entry_price', 0))
+            if stop_id:
+                pos['stop_order_id'] = stop_id
+            else:
+                pos.pop('stop_order_id', None)
+
+        self._save_state()
+        self.logger.info(
+            "LIVE reconciliation complete",
+            stale_orders_cancelled=cancelled,
+            ghosts_dropped=len(ghosts),
+            positions_kept=len(self.positions),
+        )
+
+    def _report_short_eligibility(self) -> None:
+        """LIVE startup: which configured pairs can actually be shorted."""
+        for pair in self.pairs:
+            usable = self.client.margin_leverage_for(
+                pair, OrderSide.SELL, self.short_leverage)
+            if usable is None:
+                self._short_blocked_pairs.add(pair)
+                self.logger.warning(
+                    f"SHORTS UNAVAILABLE for {pair} (no Kraken margin support) "
+                    f"— paper/replay short P&L on this pair will not occur live"
+                )
+            else:
+                self.logger.info(f"Shorts enabled for {pair} at {usable}x leverage")
+
+    def _check_live_drift(self) -> None:
+        """
+        Periodic LIVE sanity check (read-only): alert if internal positions
+        diverge from the exchange. Mutating fixes happen only at startup
+        reconciliation, where there is no in-flight activity to race.
+        """
+        open_positions = self.client.get_open_positions()
+        balances = self.client.get_balances()
+        margin_by_pair: Dict[str, float] = {}
+        for p in open_positions.values():
+            vol_open = float(p.get('vol', 0) or 0) - float(p.get('vol_closed', 0) or 0)
+            if vol_open > 0 and p.get('type') == 'sell':
+                our = self._pair_from_kraken(p.get('pair', ''))
+                if our:
+                    margin_by_pair[our] = margin_by_pair.get(our, 0) + vol_open
+
+        for pair, pos in self.positions.items():
+            side, size = pos.get('side', 'long'), pos.get('size', 0)
+            if side == 'short':
+                on_exch = margin_by_pair.pop(pair, 0.0)
+                if abs(on_exch - size) > size * 0.02:
+                    self.logger.error(
+                        f"CRITICAL DRIFT: {pair} short size {size} in state vs "
+                        f"{on_exch} on exchange"
+                    )
+            else:
+                base = pair.split("/")[0]
+                bal = balances.get(base)
+                if bal is None or bal.total < size * 0.98:
+                    self.logger.error(
+                        f"CRITICAL DRIFT: {pair} long size {size} in state but "
+                        f"balance is {bal.total if bal else 0}"
+                    )
+        for pair, vol in margin_by_pair.items():
+            self.logger.error(
+                f"CRITICAL DRIFT: margin short {pair} vol={vol} on exchange "
+                f"with no matching state position"
+            )
 
     def _get_strategy_for_pair(self, pair: str) -> ScalpingStrategy:
         """Get the strategy for a specific pair (per-pair or default)."""
@@ -883,14 +1417,43 @@ class ScalpingTrader:
         position_data = self.positions[pair]
         pos_side = position_data.get('side', 'long')
 
-        exit_order = self._execute_exit_order(pair, pos_side, position_data['size'])
-        if exit_order is None:
-            self.logger.error(
-                f"EXIT ORDER FAILED for {pair} — position still open, will retry next cycle",
-                side=pos_side,
-                reason=exit_reason,
+        # LIVE: deal with the resting server-side stop first. If it already
+        # triggered, the position is closed on the exchange — settle from the
+        # stop's actual fill instead of placing a redundant exit order.
+        stop_status, stop_fill = self._resolve_server_stop(pair, position_data)
+        if stop_status == 'filled':
+            self.logger.warning(
+                f"Server-side disaster stop already executed for {pair} — "
+                f"settling from its fill"
             )
-            return False
+            exit_order = {
+                'order_id': position_data.get('stop_order_id', ''),
+                'fill_price': (stop_fill.get('price') or 0.0) or current_price,
+                'fill_volume': stop_fill.get('vol_exec', position_data['size']),
+                'fee': stop_fill.get('fee', 0.0),
+                'status': 'closed',
+            }
+            exit_reason = f"{exit_reason} [server stop filled]"
+        else:
+            exit_order = self._execute_exit_order(pair, pos_side, position_data['size'])
+            if exit_order is None:
+                self.logger.error(
+                    f"EXIT ORDER FAILED for {pair} — position still open, will retry next cycle",
+                    side=pos_side,
+                    reason=exit_reason,
+                )
+                # We cancelled the stop but the exit failed: the position is
+                # naked until the retry. Re-arm the server-side stop.
+                if stop_status == 'cancelled':
+                    new_stop = self._place_server_stop(
+                        pair, pos_side, position_data['size'],
+                        position_data.get('entry_price', 0))
+                    if new_stop:
+                        position_data['stop_order_id'] = new_stop
+                    else:
+                        position_data.pop('stop_order_id', None)
+                    self._save_state()
+                return False
 
         # Use actual fill price if available, otherwise use current_price
         exit_price = exit_order.get('fill_price') or current_price
@@ -1120,6 +1683,17 @@ class ScalpingTrader:
             signal = strategy.analyze(market_data, None)
 
             if signal.signal_type.value in ("buy", "sell_short"):
+                # Regime-flip cooldown: forensics show entries chased into a
+                # fresh flip are net losers (-$2,010 across 3 quarters).
+                if (self.flip_entry_cooldown > 0
+                        and self._candles_since_flip < self.flip_entry_cooldown):
+                    self.logger.debug(
+                        f"Skipping {pair} entry — regime flipped "
+                        f"{self._candles_since_flip} candles ago "
+                        f"(cooldown {self.flip_entry_cooldown})"
+                    )
+                    return
+
                 # Correlation cluster check
                 corr_block = self._correlation_blocked(pair)
                 if corr_block:
@@ -1180,6 +1754,13 @@ class ScalpingTrader:
                     'entry_fee': order_result.get('fee', 0.0),
                 }
 
+                # LIVE: rest a disaster stop on the exchange so the position
+                # is protected even if this process dies.
+                stop_id = self._place_server_stop(
+                    pair, pos_side, self.positions[pair]['size'], fill_price)
+                if stop_id:
+                    self.positions[pair]['stop_order_id'] = stop_id
+
                 self.logger.info(
                     f"OPENED {pair}",
                     side=pos_side,
@@ -1235,6 +1816,17 @@ class ScalpingTrader:
                     capital=f"${self.capital:.2f}",
                     total_pnl=f"${self.metrics['total_pnl']:.2f}"
                 )
+
+                # LIVE: periodic read-only sanity check that internal state
+                # still matches the exchange.
+                if not self.paper_trading:
+                    self._cycles_since_drift_check += 1
+                    if self._cycles_since_drift_check >= self.live_drift_check_cycles:
+                        self._cycles_since_drift_check = 0
+                        try:
+                            self._check_live_drift()
+                        except Exception as drift_err:
+                            self.logger.error(f"Drift check failed: {drift_err}")
 
                 time.sleep(check_interval)
 

@@ -136,8 +136,11 @@ def main():
     configure_logging(level="WARNING", format_type="json")
 
     data_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/q1_2025")
+    # Optional config override (arg 2) for A/B experiments
+    config_path = sys.argv[2] if len(sys.argv) > 2 else "config/scalping.yaml"
     print(f"\n{'='*70}")
     print(f"  REPLAY TEST — feeding {data_dir} through live ScalpingTrader")
+    print(f"  Config: {config_path}")
     print(f"{'='*70}\n")
 
     # Load historical data
@@ -161,7 +164,7 @@ def main():
     original_init = KrakenClient.__init__
     KrakenClient.__init__ = lambda self, **kwargs: None
     trader = ScalpingTrader(
-        config_path="config/scalping.yaml",
+        config_path=config_path,
         data_dir=str(replay_data_dir),
         paper_trading=True,
     )

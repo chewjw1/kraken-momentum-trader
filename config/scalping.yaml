@@ -1,4 +1,20 @@
-# Scalping Strategy Configuration (v11 — Q2 2026 OOS-validated, config hygiene)
+# Scalping Strategy Configuration (v12 — live order lifecycle + flip cooldown)
+#
+# v12 changes (June 2026):
+#   - LIVE order lifecycle (see `live:` section): maker fill management with
+#     timeout/cancel/market-fallback, partial-fill handling, post-only
+#     rejection retries, server-side disaster stops, startup reconciliation
+#     against exchange state, periodic drift alerts, AddOrder idempotency
+#     protection (userref-tagged orders, no blind network retries).
+#     All lifecycle behavior is gated on --live; paper mode is byte-identical
+#     to v11 with cooldown disabled (replay parity verified to the cent).
+#   - Regime-flip entry cooldown (10 candles): +$1,603 across 4 quarters,
+#     improves 3/4. See regime_detector.flip_entry_cooldown_candles.
+#
+# v12 validated baselines (integrated replay, $10k, cooldown 10):
+#   Q4 2024 +$1,405 | Q1 2025 -$217 | Q1 2026 +$3,836 | Q2 2026 -$287
+#
+# Previous: (v11 — Q2 2026 OOS-validated, config hygiene)
 # Enhanced with: Stochastic, MACD, OBV, ATR dynamic stops, short selling,
 #   doji candle filter, disaster stop, trailing stops (available but disabled)
 #
@@ -78,6 +94,37 @@ trailing_stops:
   enabled: false          # Set true to activate trailing stop logic
   trail_trigger_pct: 0.5  # Start trailing at 50% of TP progress
   trail_lock_pct: 0.5     # Lock in 50% of peak unrealized profit
+
+# LIVE order lifecycle (only read when running with --live; paper fills are
+# instant and use none of this)
+live:
+  # Maker (post-only) orders rest on the book. Wait this long for a fill,
+  # polling every fill_poll_seconds, before cancelling the remainder.
+  fill_timeout_seconds: 120
+  fill_poll_seconds: 5
+  # Unfilled ENTRY after timeout: chase with a market order (taker 0.26% vs
+  # maker 0.16%). The strategy's per-trade edge dwarfs the 0.1% fee delta, so
+  # missing a validated entry costs more than paying taker. EXITS always fall
+  # back to market — never stay in a position you decided to leave.
+  entry_fallback_to_market: true
+  # Post-only orders are rejected when price crosses our limit between ticker
+  # fetch and placement; each retry re-prices at the fresh bid/ask.
+  max_postonly_retries: 2
+  # Rest a stop-loss on the EXCHANGE at the disaster-stop level (10%) so
+  # positions are protected through process crashes and seedbox outages.
+  # Normal exits remain the validated in-process candle logic.
+  server_side_disaster_stop: true
+  # Startup reconciliation: margin shorts found on the exchange that the
+  # state file doesn't know about are flattened (they bleed ~0.02%/4h
+  # rollover and carry unmonitored risk). Margin positions can only have come
+  # from this bot; manual spot holdings are never touched.
+  flatten_unknown_margin: true
+  # Cancel resting orders tagged with our userref at startup (a dead process
+  # leaves maker orders and stops on the book). Manual orders are untouched.
+  cancel_stale_orders_on_start: true
+  # Read-only state-vs-exchange comparison every N cycles (~minutes at 60s
+  # check interval); logs CRITICAL on divergence.
+  drift_check_every_cycles: 60
 
 # Short selling configuration
 shorting:
@@ -389,6 +436,21 @@ regime_detector:
   # per-candle checking turns Q4 2024 replay from +$1,068 into -$595
   # (43 regime flips vs 4). Do not lower without 3-quarter revalidation.
   check_every_candles: 20
+  # Block NEW entries for N committed BTC candles after a regime flip
+  # (~40h at 10). Pre-registered hypothesis from trade forensics (entries
+  # within 20 candles of a flip lost -$2,010 net across 3 quarters),
+  # validated on all 4 quarters (integrated replay, $10k):
+  #            baseline    cooldown=10   cooldown=20
+  #   Q4 2024  +$1,068     +$1,405       +$1,292
+  #   Q1 2025  -$1,233     -$217         +$36
+  #   Q1 2026  +$3,035     +$3,836       +$1,151
+  #   Q2 2026  +$264       -$287         -$481
+  #   TOTAL    +$3,134     +$4,736       +$1,998
+  # 10 improves 3/4 quarters (+$1,603 total, +51%); the single regression
+  # (Q2'26 -$552) is inside the +/-$1k phase-noise band. 20 over-suppresses
+  # (kills Q1'26). Exits and open positions are NEVER blocked — only fresh
+  # entries. First detection after process start does not count as a flip.
+  flip_entry_cooldown_candles: 10
 
 # EMA trend filter threshold (filter on/off is controlled per-regime by
 # REGIME_ADJUSTMENTS in regime_detector.py, not by config)

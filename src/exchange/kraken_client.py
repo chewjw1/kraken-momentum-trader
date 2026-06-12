@@ -6,6 +6,7 @@ Handles authentication, rate limiting, and API interactions.
 import base64
 import hashlib
 import hmac
+import math
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -93,11 +94,18 @@ class OHLC:
 
 
 class KrakenAPIError(Exception):
-    """Kraken API error."""
+    """Kraken API error.
 
-    def __init__(self, message: str, errors: list[str] = None):
+    `network` is True when the failure was at the transport layer (timeout,
+    connection reset) — meaning Kraken MAY have received and executed the
+    request. API-level errors (network=False) are definitive: the exchange
+    rejected the request and nothing executed.
+    """
+
+    def __init__(self, message: str, errors: list[str] = None, network: bool = False):
         super().__init__(message)
         self.errors = errors or []
+        self.network = network
 
 
 class KrakenClient:
@@ -110,6 +118,12 @@ class KrakenClient:
 
     BASE_URL = "https://api.kraken.com"
     API_VERSION = "0"
+
+    # int32 tag attached to every order this bot places (AddOrder `userref`).
+    # Lets startup reconciliation cancel OUR stale orders while leaving any
+    # manually placed orders on the account untouched, and enables recovery
+    # of orders whose AddOrder response was lost to a network failure.
+    BOT_USERREF = 84119231
 
     def __init__(
         self,
@@ -173,9 +187,9 @@ class KrakenClient:
         self._paper_order_counter = 0
         self._paper_balances_initialized = False
 
-        # Per-pair price decimals from AssetPairs (Kraken rejects prices finer
-        # than pair_decimals — e.g. BTC/USD allows only 1 decimal). Lazy cache.
-        self._pair_decimals: dict[str, int] = {}
+        # Per-pair trading constraints from AssetPairs (price/volume precision,
+        # order minimums, allowed margin leverage). Lazy cache.
+        self._pair_info: dict[str, dict] = {}
 
         # If paper trading with valid credentials, fetch real balances
         if paper_trading and self._api_key and self._api_secret:
@@ -216,7 +230,8 @@ class KrakenClient:
         method: str,
         endpoint: str,
         data: dict = None,
-        private: bool = False
+        private: bool = False,
+        idempotent: bool = True
     ) -> dict:
         """
         Make an API request with retry logic.
@@ -226,12 +241,18 @@ class KrakenClient:
             endpoint: API endpoint.
             data: Request data.
             private: Whether this is a private endpoint.
+            idempotent: If False (AddOrder), network failures are NOT retried —
+                a timeout after Kraken received the order would double-execute
+                on retry. The caller must resolve the ambiguity (see
+                _recover_ambiguous_order). API-error responses are always safe
+                to retry where marked: an error reply proves nothing executed.
 
         Returns:
             API response data.
 
         Raises:
-            KrakenAPIError: If the request fails.
+            KrakenAPIError: If the request fails. `.network` is True when the
+                outcome is ambiguous (transport failure on the final attempt).
         """
         url = f"{self.BASE_URL}/{self.API_VERSION}/{endpoint}"
         data = data or {}
@@ -269,9 +290,16 @@ class KrakenClient:
 
                 if result.get("error"):
                     errors = result["error"]
-                    # Check for rate limit errors
+                    # Rate-limit and EService (busy/unavailable) replies are
+                    # definitive "nothing executed" — safe to retry even for
+                    # AddOrder.
                     if any("EAPI:Rate limit" in e for e in errors):
                         logger.warning("Rate limit hit, waiting before retry")
+                        time.sleep(self._retry_delay * (attempt + 1))
+                        continue
+                    if any(e.startswith("EService:") for e in errors) \
+                            and attempt < self._retry_attempts - 1:
+                        logger.warning(f"Kraken busy ({errors}), retrying")
                         time.sleep(self._retry_delay * (attempt + 1))
                         continue
                     raise KrakenAPIError(f"API error: {errors}", errors)
@@ -285,10 +313,17 @@ class KrakenClient:
                     error=str(e),
                     endpoint=endpoint
                 )
+                if not idempotent:
+                    # Outcome unknown — do NOT blind-retry a possibly-executed
+                    # order. Surface the ambiguity to the caller.
+                    break
                 if attempt < self._retry_attempts - 1:
                     time.sleep(self._retry_delay * (attempt + 1))
 
-        raise KrakenAPIError(f"Request failed after {self._retry_attempts} attempts: {last_error}")
+        raise KrakenAPIError(
+            f"Request failed after network error(s): {last_error}",
+            network=True,
+        )
 
     # =========================================================================
     # Public API Methods
@@ -481,17 +516,30 @@ class KrakenClient:
 
         kraken_pair = self._normalize_pair(pair)
 
+        # Live volume must respect the pair's lot precision (Kraken rejects
+        # excess decimals) and minimum order size. Rounded DOWN so we never
+        # order more than the strategy sized or the balance covers.
+        volume = self._normalize_volume(pair, volume)
+
         data = {
             "pair": kraken_pair,
             "type": side.value,
             "ordertype": order_type.value,
             "volume": str(volume),
+            # Tag every bot order so startup reconciliation can distinguish
+            # our resting orders from anything placed manually on the account.
+            "userref": str(self.BOT_USERREF),
         }
 
-        if price and order_type in (OrderType.LIMIT, OrderType.STOP_LOSS_LIMIT, OrderType.TAKE_PROFIT_LIMIT):
+        # For plain stop-loss/take-profit, `price` IS the trigger price.
+        # For *-limit variants, `price` is the trigger and `price2` the limit.
+        if price and order_type in (OrderType.LIMIT, OrderType.STOP_LOSS,
+                                    OrderType.TAKE_PROFIT,
+                                    OrderType.STOP_LOSS_LIMIT,
+                                    OrderType.TAKE_PROFIT_LIMIT):
             data["price"] = str(price)
 
-        if stop_price and order_type in (OrderType.STOP_LOSS, OrderType.STOP_LOSS_LIMIT, OrderType.TAKE_PROFIT, OrderType.TAKE_PROFIT_LIMIT):
+        if stop_price and order_type in (OrderType.STOP_LOSS_LIMIT, OrderType.TAKE_PROFIT_LIMIT):
             data["price2"] = str(stop_price)
 
         if validate_only:
@@ -509,7 +557,32 @@ class KrakenClient:
         if reduce_only:
             data["reduce_only"] = "true"
 
-        result = self._request("POST", "private/AddOrder", data, private=True)
+        try:
+            result = self._request("POST", "private/AddOrder", data,
+                                   private=True, idempotent=False)
+        except KrakenAPIError as e:
+            if not e.network or validate_only:
+                raise
+            # Transport failure AFTER possibly sending the order: Kraken may
+            # or may not have executed it. Look for it by userref before
+            # concluding anything — blind retry could double the position.
+            recovered = self._recover_ambiguous_order(pair, side, volume)
+            if recovered is not None:
+                logger.warning(
+                    f"AddOrder network failure but order WAS placed — recovered "
+                    f"{recovered.order_id} via userref scan",
+                    pair=pair, side=side.value,
+                )
+                return recovered
+            raise
+
+        if validate_only:
+            return Order(
+                order_id="VALIDATE-ONLY", pair=pair, side=side,
+                order_type=order_type, price=price, volume=volume,
+                filled_volume=0.0, status="validated",
+                created_at=datetime.now(timezone.utc),
+            )
 
         if "txid" not in result or not result["txid"]:
             raise KrakenAPIError("No order ID returned from exchange")
@@ -577,25 +650,172 @@ class KrakenClient:
             reduce_only=reduce_only
         )
 
+    def _get_pair_info(self, pair: str) -> Optional[dict]:
+        """
+        Trading constraints for a pair from AssetPairs, cached after first
+        lookup. Returns None (not cached) if the lookup fails, so a transient
+        API failure doesn't poison the cache.
+
+        Keys: pair_decimals (price precision), lot_decimals (volume
+        precision), ordermin (minimum volume), leverage_buy / leverage_sell
+        (allowed margin leverages — empty list means no margin support).
+        """
+        cached = self._pair_info.get(pair)
+        if cached is not None:
+            return cached
+        try:
+            result = self._request(
+                "GET", "public/AssetPairs", {"pair": self._normalize_pair(pair)}
+            )
+            raw = list(result.values())[0]
+            info = {
+                "pair_decimals": int(raw.get("pair_decimals", 2)),
+                "lot_decimals": int(raw.get("lot_decimals", 8)),
+                "ordermin": float(raw.get("ordermin", 0) or 0),
+                "leverage_buy": [int(x) for x in raw.get("leverage_buy", [])],
+                "leverage_sell": [int(x) for x in raw.get("leverage_sell", [])],
+            }
+            self._pair_info[pair] = info
+            return info
+        except Exception as e:
+            logger.warning(f"Could not fetch AssetPairs info for {pair}: {e}")
+            return None
+
     def _get_pair_decimals(self, pair: str) -> int:
         """
-        Price decimals Kraken accepts for a pair (AssetPairs.pair_decimals),
-        cached after first lookup. Falls back to the legacy value of 2 if the
-        lookup fails so order placement degrades rather than breaks.
+        Price decimals Kraken accepts for a pair (AssetPairs.pair_decimals).
+        Falls back to the legacy value of 2 if the lookup fails so order
+        placement degrades rather than breaks.
         """
-        if pair not in self._pair_decimals:
-            try:
-                result = self._request(
-                    "GET", "public/AssetPairs", {"pair": self._normalize_pair(pair)}
+        info = self._get_pair_info(pair)
+        return info["pair_decimals"] if info else 2
+
+    def _normalize_volume(self, pair: str, volume: float) -> float:
+        """
+        Round volume DOWN to the pair's lot_decimals (Kraken rejects volumes
+        with excess precision) and enforce the pair minimum.
+
+        Raises KrakenAPIError if the volume is below the pair's ordermin —
+        the order would be rejected by the exchange anyway, and this surfaces
+        the reason instead of an opaque EGeneral:Invalid arguments.
+        """
+        info = self._get_pair_info(pair)
+        if not info:
+            return volume
+        factor = 10 ** info["lot_decimals"]
+        normalized = math.floor(volume * factor) / factor
+        if info["ordermin"] and normalized < info["ordermin"]:
+            raise KrakenAPIError(
+                f"Volume {normalized} below pair minimum {info['ordermin']} for {pair}"
+            )
+        return normalized
+
+    def margin_leverage_for(self, pair: str, side: OrderSide,
+                            preferred: int) -> Optional[int]:
+        """
+        Usable margin leverage for a pair/side, or None if the pair has no
+        margin support (shorts impossible on Kraken without margin).
+
+        Prefers `preferred` if allowed, else the smallest allowed leverage —
+        leverage only affects collateral, never position size, so smaller is
+        strictly safer.
+        """
+        info = self._get_pair_info(pair)
+        if not info:
+            return None
+        allowed = info["leverage_sell"] if side == OrderSide.SELL else info["leverage_buy"]
+        if not allowed:
+            return None
+        return preferred if preferred in allowed else min(allowed)
+
+    def query_order(self, order_id: str) -> dict:
+        """
+        Current state of an order (QueryOrders).
+
+        Returns dict with: status (pending/open/closed/canceled/expired),
+        vol (requested), vol_exec (filled), price (avg fill price), fee.
+        """
+        if self.paper_trading:
+            o = self._paper_orders.get(order_id)
+            if o is None:
+                return {"status": "unknown", "vol": 0.0, "vol_exec": 0.0,
+                        "price": 0.0, "fee": 0.0}
+            return {"status": o.status, "vol": o.volume,
+                    "vol_exec": o.filled_volume, "price": o.price or 0.0,
+                    "fee": o.fee}
+
+        result = self._request("POST", "private/QueryOrders",
+                               {"txid": order_id}, private=True)
+        raw = result.get(order_id, {})
+        return {
+            "status": raw.get("status", "unknown"),
+            "vol": float(raw.get("vol", 0) or 0),
+            "vol_exec": float(raw.get("vol_exec", 0) or 0),
+            "price": float(raw.get("price", 0) or 0),
+            "fee": float(raw.get("fee", 0) or 0),
+        }
+
+    def get_open_positions(self) -> dict:
+        """
+        Open margin positions (OpenPositions), keyed by position txid.
+        Empty in paper mode — paper margin is simulated locally.
+        """
+        if self.paper_trading:
+            return {}
+        return self._request("POST", "private/OpenPositions", {}, private=True) or {}
+
+    def get_open_orders_raw(self) -> dict:
+        """Raw OpenOrders payload {txid: data} including userref/descr."""
+        if self.paper_trading:
+            return {}
+        result = self._request("POST", "private/OpenOrders", {}, private=True)
+        return result.get("open", {})
+
+    def _recover_ambiguous_order(self, pair: str, side: OrderSide,
+                                 volume: float) -> Optional[Order]:
+        """
+        After a network failure on AddOrder, determine whether the order
+        actually reached the exchange by scanning recent orders carrying our
+        BOT_USERREF for a matching pair/side/volume.
+
+        Returns the recovered Order, or None if no matching order was placed
+        (caller may then safely treat the AddOrder as failed).
+        """
+        try:
+            time.sleep(2)  # let the exchange settle the in-flight request
+            candidates: dict[str, dict] = {}
+            open_result = self._request(
+                "POST", "private/OpenOrders",
+                {"userref": str(self.BOT_USERREF)}, private=True)
+            candidates.update(open_result.get("open", {}))
+            closed_result = self._request(
+                "POST", "private/ClosedOrders",
+                {"userref": str(self.BOT_USERREF),
+                 "start": int(time.time()) - 300}, private=True)
+            candidates.update(closed_result.get("closed", {}))
+
+            kraken_pair = self._normalize_pair(pair)
+            for txid, raw in candidates.items():
+                descr = raw.get("descr", {})
+                if descr.get("type") != side.value:
+                    continue
+                if descr.get("pair", "").replace("/", "") not in (kraken_pair, pair.replace("/", "")):
+                    continue
+                if abs(float(raw.get("vol", 0)) - volume) > volume * 0.001:
+                    continue
+                return Order(
+                    order_id=txid, pair=pair, side=side,
+                    order_type=OrderType.LIMIT,
+                    price=float(raw.get("price", 0) or 0) or None,
+                    volume=volume,
+                    filled_volume=float(raw.get("vol_exec", 0) or 0),
+                    status=raw.get("status", "open"),
+                    created_at=datetime.now(timezone.utc),
+                    fee=float(raw.get("fee", 0) or 0),
                 )
-                info = list(result.values())[0]
-                self._pair_decimals[pair] = int(info["pair_decimals"])
-            except Exception as e:
-                logger.warning(
-                    f"Could not fetch pair_decimals for {pair}, defaulting to 2: {e}"
-                )
-                self._pair_decimals[pair] = 2
-        return self._pair_decimals[pair]
+        except Exception as e:
+            logger.error(f"Ambiguous-order recovery scan failed: {e}")
+        return None
 
     def cancel_order(self, order_id: str) -> bool:
         """
