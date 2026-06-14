@@ -420,6 +420,12 @@ risk:
 fees:
   maker_percent: 0.16
   taker_percent: 0.26
+  # Kraken margin rollover: charged on OPEN MARGIN positions (shorts only;
+  # longs are spot) per started 4h period, as % of notional. Live pays this
+  # to the exchange directly; paper/replay now deduct it too so simulated
+  # short P&L matches reality (a multi-day short costs ~0.12%/day extra).
+  # Set 0 to disable modeling. Kraken's published rate is ~0.01-0.02%/4h.
+  margin_rollover_percent_4h: 0.02
 
 # Order execution
 execution:

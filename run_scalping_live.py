@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import signal
 import sys
@@ -216,6 +217,13 @@ class ScalpingTrader:
         self.disaster_stop_pct = float(self.config.get('risk', {}).get('disaster_stop_percent', 0.0))
         # Fee rate depends on order type
         self.fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if self.use_maker_orders else self.config.get('fees', {}).get('taker_percent', 0.26)
+        # Margin rollover: Kraken charges this (% of notional) per started 4h
+        # period on OPEN MARGIN positions (shorts). Longs are spot — no
+        # rollover. Live charges it on the real account; paper/replay don't
+        # see it natively, so we deduct it in _close_position in ALL modes so
+        # the software P&L ledger matches what a multi-day short truly costs.
+        self.margin_rollover_pct_4h = float(
+            self.config.get('fees', {}).get('margin_rollover_percent_4h', 0.0))
 
         # Candle interval from config (default 60 for backward compatibility)
         self.candle_interval = self.config.get('strategy', {}).get('candle_interval', 60)
@@ -1408,8 +1416,37 @@ class ScalpingTrader:
         except Exception as e:
             self.logger.debug(f"Could not compute indicators for {pair}: {e}")
 
+    def _rollover_fee_pct(self, position_data: dict, exit_candle_ts) -> float:
+        """Margin rollover cost as a % of notional for a held position.
+
+        Kraken charges ~0.02%/4h on OPEN MARGIN positions; in this bot only
+        shorts are margin (longs are spot, no rollover). Duration is measured
+        from candle timestamps so it is correct in replay (where wall-clock
+        time barely advances) as well as live. Each *started* 4h period is
+        charged, matching Kraken's rollover billing.
+        """
+        if self.margin_rollover_pct_4h <= 0:
+            return 0.0
+        if position_data.get('side') != 'short':
+            return 0.0
+        entry_ts = position_data.get('entry_candle_ts')
+        if not entry_ts:
+            return 0.0
+        try:
+            t0 = datetime.fromisoformat(entry_ts)
+            t1 = (exit_candle_ts if isinstance(exit_candle_ts, datetime)
+                  else datetime.fromisoformat(exit_candle_ts))
+        except (TypeError, ValueError):
+            return 0.0
+        held_seconds = (t1 - t0).total_seconds()
+        if held_seconds <= 0:
+            return 0.0
+        periods = math.ceil(held_seconds / (4 * 3600))
+        return periods * self.margin_rollover_pct_4h
+
     def _close_position(self, pair: str, exit_reason: str, current_price: float,
-                        strategy_instance: 'ScalpingStrategy') -> bool:
+                        strategy_instance: 'ScalpingStrategy',
+                        exit_candle_ts=None) -> bool:
         """Execute the exit order and settle P&L/metrics for an open position.
 
         Returns True if the position was closed, False if the exit order
@@ -1477,6 +1514,13 @@ class ScalpingTrader:
         else:
             fee_pct = strategy_instance.config.fee_percent * 2
             net_pnl_pct = pnl_pct - fee_pct
+
+        # Margin rollover (shorts only) — the cost of holding a leveraged
+        # position across 4h boundaries. Live pays this to Kraken directly;
+        # paper/replay deduct it here so simulated P&L matches reality.
+        rollover_pct = self._rollover_fee_pct(position_data, exit_candle_ts)
+        if rollover_pct > 0:
+            net_pnl_pct -= rollover_pct
 
         pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
 
@@ -1560,6 +1604,8 @@ class ScalpingTrader:
                         f"Disaster stop: {d_pnl:.2f}% breached -{self.disaster_stop_pct:.1f}% floor",
                         d_price,
                         self._get_strategy_for_pair(pair),
+                        exit_candle_ts=(market_data.ticker.timestamp
+                                        if market_data.ticker else None),
                     )
                     return
 
@@ -1675,7 +1721,11 @@ class ScalpingTrader:
                     exit_reason = signal.reason
 
             if should_exit:
-                self._close_position(pair, exit_reason, current_price, strategy_instance)
+                self._close_position(
+                    pair, exit_reason, current_price, strategy_instance,
+                    exit_candle_ts=(market_data.ticker.timestamp
+                                    if market_data.ticker else None),
+                )
 
         else:
             # Look for entry
@@ -1746,6 +1796,14 @@ class ScalpingTrader:
                     'size': order_result.get('fill_volume', size),
                     'size_usd': size_usd,
                     'entry_time': datetime.now(timezone.utc).isoformat(),
+                    # Candle timestamp at entry — used to measure margin hold
+                    # duration for rollover (works in replay where wall-clock
+                    # entry_time barely advances; live candle ts is real too).
+                    'entry_candle_ts': (
+                        market_data.ticker.timestamp.isoformat()
+                        if market_data.ticker and market_data.ticker.timestamp
+                        else datetime.now(timezone.utc).isoformat()
+                    ),
                     'reason': signal.reason,
                     'regime': self._current_regime.value,
                     'best_price': fill_price,
