@@ -113,10 +113,12 @@ class ScalpingTrader:
             atr_tp_multiplier=atr_cfg.get('tp_multiplier', 2.75),
             use_atr_stops=atr_cfg.get('use_dynamic_stops', True),
             vwap_threshold_percent=vwap_cfg.get('threshold_percent', 0.5),
+            vwap_anchor_candles=vwap_cfg.get('anchor_candles', 0),
             volume_spike_threshold=vol_cfg.get('spike_threshold', 1.5),
             shorting_enabled=shorting_cfg.get('enabled', True),
             short_min_confirmations=shorting_cfg.get('min_confirmations', 3),
             ema_bearish_threshold=ema_bearish_thr,
+            dedup_rsi_stoch=self.config.get('strategy', {}).get('dedup_rsi_stoch', False),
         )
         self.strategy = ScalpingStrategy(default_config)
 
@@ -134,8 +136,10 @@ class ScalpingTrader:
                 bb_std_dev=params.get('bb_std_dev', default_config.bb_std_dev),
                 bb_squeeze_threshold=params.get('bb_squeeze_threshold', default_config.bb_squeeze_threshold),
                 vwap_threshold_percent=params.get('vwap_threshold_percent', default_config.vwap_threshold_percent),
+                vwap_anchor_candles=params.get('vwap_anchor_candles', default_config.vwap_anchor_candles),
                 volume_spike_threshold=params.get('volume_spike_threshold', default_config.volume_spike_threshold),
                 min_confirmations=params.get('min_confirmations', default_config.min_confirmations),
+                dedup_rsi_stoch=default_config.dedup_rsi_stoch,
                 fee_percent=fee_rate,
                 stoch_k_period=params.get('stoch_k_period', default_config.stoch_k_period),
                 stoch_d_period=params.get('stoch_d_period', default_config.stoch_d_period),
@@ -195,6 +199,14 @@ class ScalpingTrader:
         # net (regime-flip chasing). Counts committed reference candles.
         self.flip_entry_cooldown = int(regime_cfg.get('flip_entry_cooldown_candles', 0))
         self._candles_since_flip = 10 ** 9  # no flip seen yet -> never blocks
+
+        # Dead-zone: regimes in which NEW entries are suppressed entirely
+        # ("sit out the chop"), and regimes in which only SHORTS are
+        # suppressed (e.g. grindy bear chop where shorts get squeezed and
+        # bleed rollover). Exits and open positions are NEVER affected — only
+        # fresh entries. Empty by default (no suppression).
+        self._block_entry_regimes = set(regime_cfg.get('block_entry_regimes', []) or [])
+        self._block_short_regimes = set(regime_cfg.get('block_short_regimes', []) or [])
 
         # Wall clock, injectable by test harnesses that simulate historical time
         # (used to detect Kraken's in-progress candle)
@@ -652,6 +664,8 @@ class ScalpingTrader:
             bb_std_dev=base.bb_std_dev,
             bb_squeeze_threshold=base.bb_squeeze_threshold,
             vwap_threshold_percent=base.vwap_threshold_percent,
+            vwap_anchor_candles=base.vwap_anchor_candles,
+            dedup_rsi_stoch=base.dedup_rsi_stoch,
             volume_spike_threshold=base.volume_spike_threshold,
             stoch_k_period=base.stoch_k_period,
             stoch_d_period=base.stoch_d_period,
@@ -689,6 +703,8 @@ class ScalpingTrader:
                 bb_std_dev=params.get('bb_std_dev', base.bb_std_dev),
                 bb_squeeze_threshold=params.get('bb_squeeze_threshold', base.bb_squeeze_threshold),
                 vwap_threshold_percent=params.get('vwap_threshold_percent', base.vwap_threshold_percent),
+                vwap_anchor_candles=params.get('vwap_anchor_candles', base.vwap_anchor_candles),
+                dedup_rsi_stoch=base.dedup_rsi_stoch,
                 volume_spike_threshold=params.get('volume_spike_threshold', base.volume_spike_threshold),
                 min_confirmations=max(1, base_conf + conf_offset),
                 fee_percent=fee_rate,
@@ -1741,6 +1757,20 @@ class ScalpingTrader:
                         f"Skipping {pair} entry — regime flipped "
                         f"{self._candles_since_flip} candles ago "
                         f"(cooldown {self.flip_entry_cooldown})"
+                    )
+                    return
+
+                # Dead-zone: sit out new entries in configured regimes.
+                regime_name = self._current_regime.value
+                if regime_name in self._block_entry_regimes:
+                    self.logger.debug(
+                        f"Skipping {pair} entry — dead-zone ({regime_name} regime)"
+                    )
+                    return
+                if (signal.signal_type.value == "sell_short"
+                        and regime_name in self._block_short_regimes):
+                    self.logger.debug(
+                        f"Skipping {pair} short — shorts blocked in {regime_name}"
                     )
                     return
 

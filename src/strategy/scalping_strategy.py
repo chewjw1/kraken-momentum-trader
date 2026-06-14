@@ -79,6 +79,10 @@ class ScalpingConfig:
 
     # VWAP
     vwap_threshold_percent: float = 0.3  # Signal when price is X% from VWAP
+    # 0 = cumulative over full lookback (~90d on 4h candles, a slow trend
+    # filter); N = rolling N-candle "session" anchor (intraday mean-reversion
+    # reference). See VWAPIndicator.anchor_candles.
+    vwap_anchor_candles: int = 0
 
     # Volume
     volume_spike_threshold: float = 1.5  # 1.5x average volume
@@ -109,6 +113,11 @@ class ScalpingConfig:
 
     # Entry confirmation
     min_confirmations: int = 2  # Require 2+ signals to align
+    # RSI and Stochastic are both momentum oscillators that frequently fire
+    # together; counting both as full confirmations double-counts one piece of
+    # information. When True, the second oscillator (Stochastic) contributes
+    # half weight when RSI already fired in the same direction.
+    dedup_rsi_stoch: bool = False
 
     # Fees consideration
     fee_percent: float = 0.26  # Kraken taker fee
@@ -184,7 +193,8 @@ class ScalpingStrategy(BaseStrategy):
         )
 
         self.vwap = VWAPIndicator(
-            threshold_percent=self.config.vwap_threshold_percent
+            threshold_percent=self.config.vwap_threshold_percent,
+            anchor_candles=self.config.vwap_anchor_candles
         )
 
         # Volatility
@@ -366,13 +376,17 @@ class ScalpingStrategy(BaseStrategy):
         # === LONG ENTRY CONDITIONS ===
 
         # 1. RSI oversold
-        if rsi and rsi.is_oversold:
+        rsi_fired = bool(rsi and rsi.is_oversold)
+        if rsi_fired:
             confirmations += 1
             reasons.append(f"RSI oversold ({rsi.value:.1f})")
 
-        # 2. Stochastic oversold (strong confirmation with RSI)
+        # 2. Stochastic oversold (strong confirmation with RSI). When dedup is
+        # on and RSI already fired, count Stochastic at half weight — both are
+        # momentum oscillators measuring the same exhaustion.
         if stoch and stoch.is_oversold:
-            confirmations += 1
+            stoch_weight = 0.5 if (self.config.dedup_rsi_stoch and rsi_fired) else 1.0
+            confirmations += stoch_weight
             reasons.append(f"Stoch oversold (%K={stoch.k_value:.1f})")
 
         # 3. Price at/below lower Bollinger Band
@@ -502,13 +516,16 @@ class ScalpingStrategy(BaseStrategy):
         # === SHORT ENTRY CONDITIONS ===
 
         # 1. RSI overbought
-        if rsi and rsi.is_overbought:
+        rsi_fired = bool(rsi and rsi.is_overbought)
+        if rsi_fired:
             confirmations += 1
             reasons.append(f"RSI overbought ({rsi.value:.1f})")
 
-        # 2. Stochastic overbought
+        # 2. Stochastic overbought (half weight when RSI already fired and
+        # dedup is on — correlated momentum oscillators).
         if stoch and stoch.is_overbought:
-            confirmations += 1
+            stoch_weight = 0.5 if (self.config.dedup_rsi_stoch and rsi_fired) else 1.0
+            confirmations += stoch_weight
             reasons.append(f"Stoch overbought (%K={stoch.k_value:.1f})")
 
         # 3. Price at/above upper Bollinger Band

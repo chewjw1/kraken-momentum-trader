@@ -1,4 +1,23 @@
-# Scalping Strategy Configuration (v12 — live order lifecycle + flip cooldown)
+# Scalping Strategy Configuration (v13 — rollover fidelity + session VWAP)
+#
+# v13 changes (June 2026):
+#   - MARGIN ROLLOVER now modeled in paper/replay (fees.margin_rollover_
+#     percent_4h): shorts cost ~0.02%/4h, which live pays the exchange but the
+#     sim previously ignored — overstating short P&L by ~$906 across 4 quarters.
+#     Honest baseline dropped +$4,736 -> +$3,830 (the hidden carry cost).
+#   - SESSION VWAP (indicators.vwap.anchor_candles: 6): VWAP now anchors to one
+#     calendar day instead of a ~90-day cumulative average, restoring it as an
+#     intraday mean-reversion level. +$453 over honest baseline, improves 3/4
+#     quarters including both losers. RSI/Stoch dedup was tested and REJECTED
+#     (-$1,235, wrecked Q1'25).
+#   - SIDEWAYS short block (regime_detector.block_short_regimes): A/B settled
+#     "should we sit out chop?" — no. Sitting out loses money (the strategy
+#     already profits from ranges via mean-reversion). The win is dropping the
+#     weak side: shorts in sideways (+$239, 0 regressions). Bear shorts kept.
+#
+# v13 honest baselines (replay, $10k, rollover ON, cooldown 10):
+#   Q4 2024 +$1,726 | Q1 2025 -$166 | Q1 2026 +$3,331 | Q2 2026 -$370
+#   TOTAL +$4,522
 #
 # v12 changes (June 2026):
 #   - LIVE order lifecycle (see `live:` section): maker fill management with
@@ -75,6 +94,22 @@ indicators:
 
   vwap:
     threshold_percent: 0.5
+    # Session anchor: compute VWAP over the last N candles instead of the full
+    # ~540-candle lookback. 0 = old cumulative behavior (a ~90-day VW average
+    # that acts as a slow trend filter, not a session reference). 6 = one
+    # calendar day on 4h candles — the textbook daily-VWAP anchor, which
+    # restores VWAP as an intraday mean-reversion level.
+    #   anchor   Q4'24    Q1'25    Q1'26    Q2'26    TOTAL
+    #   0 (base) +1337    -498     +3495    -504     +3830
+    #   5        +1923    -308     +3358    +132     +5105   (overfit: see below)
+    #   6 (day)  +1726    -166     +3092    -370     +4283
+    #   8        +1341    -259     +2516    -3       +3595
+    #   14       +1473    -353     +2254    -405     +2970
+    # 6 chosen as the principled daily anchor (+$453, improves 3/4 incl. both
+    # losing quarters). 5 scores higher but adjacent values swing ~$1.5k
+    # (8 is below baseline) — a knife-edge in-sample optimum, rejected as
+    # overfit per the same discipline used on param retrains.
+    anchor_candles: 6
 
   volume:
     spike_threshold: 1.5
@@ -457,6 +492,24 @@ regime_detector:
   # (kills Q1'26). Exits and open positions are NEVER blocked — only fresh
   # entries. First detection after process start does not count as a flip.
   flip_entry_cooldown_candles: 10
+
+  # Dead-zone / regime entry policy. block_entry_regimes suppresses ALL new
+  # entries in the listed regimes ("sit out the chop"); block_short_regimes
+  # suppresses only shorts. Exits and open positions are never affected.
+  #
+  # A/B on the vwap6 baseline (+$4,283) settled the "sit out sideways?"
+  # question decisively — sitting out LOSES money, because the strategy
+  # already profits from chop (mean-reversion longs + selective shorts):
+  #   block_entry sideways  -> +$4,098  (-$185, sideways trading is net +)
+  #   block_entry bear      -> +$439    (-$3,844, bear SHORTS are the engine)
+  #   block_short sideways  -> +$4,522  (+$239, improves Q1'26, 0 regressions)
+  #   block_short bear      -> -$1,548  (-$5,831, catastrophic)
+  # Adopted: block SHORTS in sideways only. In a true range, fading
+  # overbought is the weak side (ranges break up) and those shorts bleed
+  # rollover. Range longs and bear shorts are kept.
+  block_entry_regimes: []
+  block_short_regimes:
+    - sideways
 
 # EMA trend filter threshold (filter on/off is controlled per-regime by
 # REGIME_ADJUSTMENTS in regime_detector.py, not by config)
