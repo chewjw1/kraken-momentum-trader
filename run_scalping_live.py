@@ -19,6 +19,7 @@ import sys
 import time
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -278,6 +279,20 @@ class ScalpingTrader:
         self._cycles_since_drift_check = 0
         self._short_blocked_pairs: set = set()
 
+        # Concurrent pair processing (LIVE only). Sequential processing blocks
+        # the whole loop on each pair's maker-fill wait (up to fill_timeout);
+        # one slow fill delays every later pair's entries, exits and disaster
+        # checks. With concurrent_pairs > 1, pairs are processed in a bounded
+        # thread pool (Kraken HTTP calls are I/O-bound and release the GIL).
+        # Default 1 = sequential (unchanged). Paper/replay always run
+        # sequentially — fills are instant so there is no benefit, and it
+        # preserves deterministic replay parity. Shared capital/position state
+        # is guarded by _state_lock with a capital-reservation model so
+        # concurrent entries cannot double-allocate the same dollars.
+        self.live_concurrent_pairs = max(1, int(live_cfg.get('concurrent_pairs', 1)))
+        self._state_lock = threading.RLock()
+        self._reserved_usd = 0.0
+
         # Injectable sleep (test harnesses replace with a no-op so fill-wait
         # loops run deterministically without wall-clock delays)
         self._sleep = time.sleep
@@ -460,18 +475,22 @@ class ScalpingTrader:
 
     def _save_state(self) -> None:
         """Save state to disk."""
-        state = {
-            'positions': self.positions,
-            'metrics': self.metrics,
-            'capital': self.capital,
-            'initial_capital': self.initial_capital,
-            'paper_trading': self.paper_trading,
-            'pair_manager': self.pair_manager.to_dict(),
-            'regime_detector': self.regime_detector.to_dict(),
-            'current_regime': self._current_regime.value,
-            'indicator_snapshots': self.indicator_snapshots,
-            'last_update': datetime.now(timezone.utc).isoformat()
-        }
+        # Snapshot mutable shared state under the lock so a concurrent entry/
+        # exit can't change dict sizes mid-serialization (RLock = safe even
+        # when an outer caller already holds it).
+        with self._state_lock:
+            state = {
+                'positions': {k: dict(v) for k, v in self.positions.items()},
+                'metrics': dict(self.metrics),
+                'capital': self.capital,
+                'initial_capital': self.initial_capital,
+                'paper_trading': self.paper_trading,
+                'pair_manager': self.pair_manager.to_dict(),
+                'regime_detector': self.regime_detector.to_dict(),
+                'current_regime': self._current_regime.value,
+                'indicator_snapshots': self.indicator_snapshots,
+                'last_update': datetime.now(timezone.utc).isoformat()
+            }
         state_file = self.data_dir / "state.json"
         tmp_file = self.data_dir / "state.json.tmp"
         with open(tmp_file, 'w') as f:
@@ -1540,30 +1559,35 @@ class ScalpingTrader:
 
         pnl_usd = position_data['size_usd'] * (net_pnl_pct / 100)
 
-        self.capital += pnl_usd
-        if self.capital > self.metrics.get('peak_capital', 0):
-            self.metrics['peak_capital'] = self.capital
+        # Settle shared state atomically — capital, metrics and the positions
+        # dict are read by other pair threads for sizing/serialization.
+        with self._state_lock:
+            self.capital += pnl_usd
+            if self.capital > self.metrics.get('peak_capital', 0):
+                self.metrics['peak_capital'] = self.capital
 
-        # Record trade in adaptive manager
-        self.pair_manager.record_trade(
-            pair=pair,
-            entry_time=datetime.fromisoformat(position_data['entry_time']),
-            exit_time=datetime.now(timezone.utc),
-            pnl=pnl_usd,
-            pnl_percent=net_pnl_pct,
-            entry_price=entry_price,
-            exit_price=exit_price,
-            size_usd=position_data['size_usd'],
-            side=pos_side,
-        )
+            # Record trade in adaptive manager
+            self.pair_manager.record_trade(
+                pair=pair,
+                entry_time=datetime.fromisoformat(position_data['entry_time']),
+                exit_time=datetime.now(timezone.utc),
+                pnl=pnl_usd,
+                pnl_percent=net_pnl_pct,
+                entry_price=entry_price,
+                exit_price=exit_price,
+                size_usd=position_data['size_usd'],
+                side=pos_side,
+            )
 
-        # Update metrics
-        self.metrics['total_trades'] += 1
-        self.metrics['total_pnl'] += pnl_usd
-        if pnl_usd > 0:
-            self.metrics['wins'] += 1
-        else:
-            self.metrics['losses'] += 1
+            # Update metrics
+            self.metrics['total_trades'] += 1
+            self.metrics['total_pnl'] += pnl_usd
+            if pnl_usd > 0:
+                self.metrics['wins'] += 1
+            else:
+                self.metrics['losses'] += 1
+
+            del self.positions[pair]
 
         self.logger.info(
             f"CLOSED {pair}",
@@ -1578,7 +1602,6 @@ class ScalpingTrader:
             regime=self._current_regime.value,
         )
 
-        del self.positions[pair]
         self._save_state()
         return True
 
@@ -1787,8 +1810,6 @@ class ScalpingTrader:
                     return
 
                 pos_side = "long" if signal.signal_type.value == "buy" else "short"
-                deployed_capital = sum(p['size_usd'] for p in self.positions.values())
-                available_capital = self.capital - deployed_capital
 
                 # Scale position: regime adjustment * signal strength
                 regime_scale = self._regime_adjustments.get(
@@ -1797,57 +1818,69 @@ class ScalpingTrader:
                 strength_scale = 0.5 + 0.5 * signal.strength
                 total_scale = regime_scale * strength_scale
 
-                size_usd = self.capital * (self.position_size_pct / 100) * total_scale
-
-                if size_usd > available_capital:
-                    self.logger.warning(
-                        f"Skipping {pair} entry - insufficient capital",
-                        required=f"${size_usd:.2f}",
-                        available=f"${available_capital:.2f}"
-                    )
-                    return
-
                 if current_price <= 0:
                     self.logger.warning(f"Invalid price {current_price} for {pair}, skipping entry")
                     return
+
+                # Reserve capital atomically: deployed (open positions) +
+                # already-reserved (other pairs mid-fill) is subtracted so two
+                # concurrent entries can't allocate the same dollars. The slow
+                # fill-wait happens AFTER releasing the lock.
+                with self._state_lock:
+                    deployed_capital = sum(p['size_usd'] for p in self.positions.values())
+                    available_capital = self.capital - deployed_capital - self._reserved_usd
+                    size_usd = self.capital * (self.position_size_pct / 100) * total_scale
+                    if size_usd > available_capital:
+                        self.logger.warning(
+                            f"Skipping {pair} entry - insufficient capital",
+                            required=f"${size_usd:.2f}",
+                            available=f"${available_capital:.2f}"
+                        )
+                        return
+                    self._reserved_usd += size_usd
                 size = size_usd / current_price
 
-                # Execute order on Kraken
+                # Execute order on Kraken (slow maker fill-wait runs outside the
+                # lock so other pairs keep processing).
                 order_result = self._execute_entry_order(pair, pos_side, size, current_price)
-                if order_result is None:
-                    self.logger.error(f"Skipping {pair} entry — order execution failed")
-                    return
 
-                fill_price = order_result.get('fill_price', current_price)
-
-                self.positions[pair] = {
-                    'entry_price': fill_price,
-                    'side': pos_side,
-                    'size': order_result.get('fill_volume', size),
-                    'size_usd': size_usd,
-                    'entry_time': datetime.now(timezone.utc).isoformat(),
-                    # Candle timestamp at entry — used to measure margin hold
-                    # duration for rollover (works in replay where wall-clock
-                    # entry_time barely advances; live candle ts is real too).
-                    'entry_candle_ts': (
-                        market_data.ticker.timestamp.isoformat()
-                        if market_data.ticker and market_data.ticker.timestamp
-                        else datetime.now(timezone.utc).isoformat()
-                    ),
-                    'reason': signal.reason,
-                    'regime': self._current_regime.value,
-                    'best_price': fill_price,
-                    'trailing_stop': 0.0,
-                    'order_id': order_result.get('order_id', ''),
-                    'entry_fee': order_result.get('fee', 0.0),
-                }
+                with self._state_lock:
+                    self._reserved_usd -= size_usd  # release reservation
+                    if order_result is None:
+                        self.logger.error(f"Skipping {pair} entry — order execution failed")
+                        return
+                    fill_price = order_result.get('fill_price', current_price)
+                    self.positions[pair] = {
+                        'entry_price': fill_price,
+                        'side': pos_side,
+                        'size': order_result.get('fill_volume', size),
+                        'size_usd': size_usd,
+                        'entry_time': datetime.now(timezone.utc).isoformat(),
+                        # Candle timestamp at entry — used to measure margin hold
+                        # duration for rollover (works in replay where wall-clock
+                        # entry_time barely advances; live candle ts is real too).
+                        'entry_candle_ts': (
+                            market_data.ticker.timestamp.isoformat()
+                            if market_data.ticker and market_data.ticker.timestamp
+                            else datetime.now(timezone.utc).isoformat()
+                        ),
+                        'reason': signal.reason,
+                        'regime': self._current_regime.value,
+                        'best_price': fill_price,
+                        'trailing_stop': 0.0,
+                        'order_id': order_result.get('order_id', ''),
+                        'entry_fee': order_result.get('fee', 0.0),
+                    }
 
                 # LIVE: rest a disaster stop on the exchange so the position
-                # is protected even if this process dies.
+                # is protected even if this process dies. Slow API call kept
+                # outside the lock; the resulting id is written back under it.
                 stop_id = self._place_server_stop(
-                    pair, pos_side, self.positions[pair]['size'], fill_price)
+                    pair, pos_side, order_result.get('fill_volume', size), fill_price)
                 if stop_id:
-                    self.positions[pair]['stop_order_id'] = stop_id
+                    with self._state_lock:
+                        if pair in self.positions:
+                            self.positions[pair]['stop_order_id'] = stop_id
 
                 self.logger.info(
                     f"OPENED {pair}",
@@ -1862,6 +1895,37 @@ class ScalpingTrader:
                 )
 
                 self._save_state()
+
+    def _process_pair_safe(self, pair: str) -> None:
+        """Process one pair, swallowing per-pair errors so one bad pair can't
+        abort the cycle (or a sibling thread)."""
+        try:
+            self._process_pair(pair)
+        except Exception as pair_err:
+            self.logger.error(f"Error processing {pair}: {pair_err}", pair=pair)
+
+    def _process_all_pairs(self) -> None:
+        """Process every pair for this cycle, sequentially or concurrently.
+
+        Concurrency is LIVE-only and opt-in (live.concurrent_pairs > 1): the
+        maker fill-wait is the only slow step, so running pairs in a bounded
+        thread pool means the loop takes max(fill_waits) instead of
+        sum(fill_waits). Paper/replay stay sequential — instant fills give no
+        benefit and sequential order preserves deterministic replay parity.
+        """
+        pairs = list(self.pairs)
+        if self.paper_trading or self.live_concurrent_pairs <= 1:
+            for pair in pairs:
+                self._process_pair_safe(pair)
+                self._sleep(1)  # gentle inter-pair spacing
+            return
+        # Concurrent: the Kraken client's rate limiter serializes the actual
+        # HTTP, but fill-waits (sleeps) overlap, which is the whole point.
+        with ThreadPoolExecutor(
+            max_workers=self.live_concurrent_pairs,
+            thread_name_prefix="pair",
+        ) as ex:
+            list(ex.map(self._process_pair_safe, pairs))
 
     def run(self) -> None:
         """Run the trading loop."""
@@ -1883,15 +1947,7 @@ class ScalpingTrader:
                         pairs=reenabled
                     )
 
-                for pair in self.pairs:
-                    try:
-                        self._process_pair(pair)
-                    except Exception as pair_err:
-                        self.logger.error(
-                            f"Error processing {pair}: {pair_err}",
-                            pair=pair,
-                        )
-                    time.sleep(1)  # Rate limit between pairs
+                self._process_all_pairs()
 
                 self._save_state()
 

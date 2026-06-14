@@ -790,6 +790,96 @@ def stage_live_lifecycle():
         shutil.rmtree(d2, ignore_errors=True)
 
 
+def stage_concurrency():
+    stage("Concurrent pair processing — capital reservation under contention")
+    import threading
+    from types import SimpleNamespace
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import MagicMock
+    from src.exchange.kraken_client import KrakenClient, Ticker, OHLC
+    from src.strategy.base_strategy import MarketData
+    from run_scalping_live import ScalpingTrader
+
+    def build(concurrent):
+        oi = KrakenClient.__init__
+        KrakenClient.__init__ = lambda self, **kw: None
+        t = ScalpingTrader(config_path="config/scalping.yaml",
+                           data_dir="data/preflight_concurrency", paper_trading=True)
+        KrakenClient.__init__ = oi
+        t.paper_trading = False            # force the live concurrent dispatch
+        t.live_concurrent_pairs = concurrent
+        t.client = MagicMock()
+        t.capital = t.initial_capital = 10000.0
+        t.position_size_pct = 20.0
+        t.disaster_stop_pct = 0.0
+        t._candles_since_flip = 10 ** 9
+        t._block_entry_regimes = set()
+        t._block_short_regimes = set()
+        cyc = {"n": 0}
+
+        def md(pair):
+            ts = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=4 * cyc["n"])
+            c = OHLC(timestamp=ts, open=100.0, high=101.0, low=99.0,
+                     close=100.0, volume=1000.0, vwap=100.0, count=10)
+            tk = Ticker(pair=pair, ask=100.1, bid=99.9, last=100.0, volume_24h=6000.0,
+                        vwap_24h=100.0, trades_24h=100, low_24h=99.0, high_24h=101.0,
+                        timestamp=ts)
+            return MarketData(pair=pair, ohlc=[c] * 30, prices=[100.0] * 30,
+                              volumes=[1000.0] * 30, ticker=tk)
+
+        t._get_market_data = md
+        t._compute_indicator_snapshot = lambda *a, **k: None
+        t.pair_manager.is_pair_enabled = lambda pair: True
+        t._correlation_blocked = lambda pair: None
+        t._volume_filter_blocked = lambda m: None
+        t._place_server_stop = lambda *a, **k: None
+        t._save_state = lambda: None
+        sig = SimpleNamespace(signal_type=SimpleNamespace(value="buy"),
+                              strength=0.8, reason="preflight")
+        t._get_strategy_for_pair = lambda pair: SimpleNamespace(analyze=lambda m, p=None: sig)
+        infl = {"now": 0, "peak": 0}
+        lk = threading.Lock()
+
+        def slow(pair, side, size, price):
+            with lk:
+                infl["now"] += 1
+                infl["peak"] = max(infl["peak"], infl["now"])
+            time.sleep(0.03)
+            with lk:
+                infl["now"] -= 1
+            return {"order_id": f"O-{pair}", "fill_price": price,
+                    "fill_volume": size, "fee": price * size * 0.0016}
+
+        t._execute_entry_order = slow
+        return t, cyc, infl
+
+    seq_positions = None
+    for concurrent in (1, 10):
+        t, cyc, infl = build(concurrent)
+        ok_alloc = True
+        for n in range(3):
+            cyc["n"] = n
+            t.positions.clear()
+            t._last_processed_candle_ts.clear()
+            t._process_all_pairs()
+            deployed = sum(p["size_usd"] for p in t.positions.values())
+            if deployed > t.capital + 1e-6:
+                ok_alloc = False
+        npos = len(t.positions)
+        check(ok_alloc, f"concurrent={concurrent}: no capital over-allocation")
+        check(abs(t._reserved_usd) < 1e-6,
+              f"concurrent={concurrent}: reservation counter net zero")
+        if concurrent == 1:
+            seq_positions = npos
+        else:
+            check(npos == seq_positions,
+                  "concurrent allocation matches sequential",
+                  f"{npos} vs {seq_positions}")
+            check(infl["peak"] > 1, "fills actually overlapped",
+                  f"peak in-flight={infl['peak']}")
+    shutil.rmtree("data/preflight_concurrency", ignore_errors=True)
+
+
 def stage_live_loop(state_dir: Path, span: int, polls: int):
     stage(f"Mini live loop — {span} candles x {polls} polls through the real client")
     sim = FakeKrakenSession.sim
@@ -917,6 +1007,7 @@ def main():
             FAILURES.append("paper engine stage skipped (boot failed)")
         guarded(stage_live_payloads)
         guarded(stage_live_lifecycle)
+        guarded(stage_concurrency)
         guarded(stage_live_loop, loop_dir, span=span, polls=polls)
     finally:
         shutil.rmtree(state_dir, ignore_errors=True)

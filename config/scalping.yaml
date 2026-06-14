@@ -160,6 +160,15 @@ live:
   # Read-only state-vs-exchange comparison every N cycles (~minutes at 60s
   # check interval); logs CRITICAL on divergence.
   drift_check_every_cycles: 60
+  # Process pairs concurrently in a thread pool of this size (LIVE only).
+  # Sequential processing (1) blocks the whole loop on each pair's maker-fill
+  # wait — one slow fill delays every later pair's entries, exits and disaster
+  # checks. >1 overlaps the fill-waits so the cycle takes max(fill_waits)
+  # instead of sum. Shared capital is guarded by a lock + reservation model so
+  # concurrent entries can't double-allocate. Paper/replay ignore this (instant
+  # fills, and sequential order preserves replay parity). Start at 1; raise to
+  # ~3-4 after observing live fill behavior. Keep <= Kraken rate-limit headroom.
+  concurrent_pairs: 1
 
 # Short selling configuration
 shorting:
