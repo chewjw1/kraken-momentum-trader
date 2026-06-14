@@ -220,3 +220,4 @@ data/replay_cadence_test/
 
 data/concurrency_test/
 data/preflight_concurrency/
+data/drift_replay/
