@@ -876,12 +876,12 @@ class KrakenClient:
         try:
             logger.info("Fetching real balances for paper trading simulation...")
 
-            # Temporarily disable paper trading to fetch real balances
             self.paper_trading = False
-            real_balances = self.get_balances()
-            self.paper_trading = True
+            try:
+                real_balances = self.get_balances()
+            finally:
+                self.paper_trading = True
 
-            # Update paper balances with real values
             for asset, balance in real_balances.items():
                 self._paper_balances[asset] = balance.total
 

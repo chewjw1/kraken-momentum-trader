@@ -358,11 +358,12 @@ class ScalpingTrader:
         """
         fallback = self.config.get('position', {}).get('initial_capital', 10000.0)
         try:
-            # Temporarily bypass paper mode to hit real API
-            orig_paper = self.client.paper_trading
+            orig_paper = getattr(self.client, 'paper_trading', True)
             self.client.paper_trading = False
-            balances = self.client.get_balances()
-            self.client.paper_trading = orig_paper
+            try:
+                balances = self.client.get_balances()
+            finally:
+                self.client.paper_trading = orig_paper
 
             usd_balance = balances.get("USD")
             if usd_balance and usd_balance.total > 0:
