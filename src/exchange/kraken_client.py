@@ -268,22 +268,22 @@ class KrakenClient:
 
         headers = {}
 
-        if private:
-            if not self._api_key or not self._api_secret:
-                raise KrakenAPIError("API credentials required for private endpoints")
-
-            nonce = str(int(time.time() * 1000))
-            data["nonce"] = nonce
-
-            url_path = f"/{self.API_VERSION}/{endpoint}"
-            signature = self._get_signature(url_path, data, nonce)
-
-            headers["API-Key"] = self._api_key
-            headers["API-Sign"] = signature
+        if private and (not self._api_key or not self._api_secret):
+            raise KrakenAPIError("API credentials required for private endpoints")
 
         # Retry logic
         last_error = None
         for attempt in range(self._retry_attempts):
+            if private:
+                # Fresh nonce PER ATTEMPT: Kraken rejects a reused nonce, so
+                # a retry re-sending the original nonce (after a rate-limit
+                # or EService reply) is guaranteed EAPI:Invalid nonce —
+                # which made every retry path dead code in live.
+                nonce = str(int(time.time() * 1000))
+                data["nonce"] = nonce
+                url_path = f"/{self.API_VERSION}/{endpoint}"
+                headers["API-Key"] = self._api_key
+                headers["API-Sign"] = self._get_signature(url_path, data, nonce)
             try:
                 if method.upper() == "GET":
                     response = self._session.get(url, params=data, headers=headers)

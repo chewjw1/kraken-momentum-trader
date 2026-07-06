@@ -326,6 +326,14 @@ class ScalpingTrader:
         # Load saved state
         self._load_state()
 
+        # LIVE fresh start: don't trade blind for ~3 days. The regime counter
+        # normally waits check_every_candles (20) committed BTC candles before
+        # the FIRST detection, leaving a fresh live boot in UNKNOWN (shorts
+        # enabled) for ~76h. Prime the counter so the first cycle detects
+        # immediately. Paper/replay are untouched (validated cadence).
+        if not paper_trading and self._current_regime == MarketRegime.UNKNOWN:
+            self._regime_check_counter = self._regime_check_interval
+
         # LIVE ONLY: reconcile saved state against the exchange's actual
         # positions/orders. state.json can go stale while the process is down
         # (stops triggered, manual intervention, liquidation) — trusting it
@@ -382,10 +390,27 @@ class ScalpingTrader:
                 print(f"  Kraken account balance: ${usdt.total:.2f} USDT")
                 return usdt.total
 
+            # LIVE: refuse to size real positions off the config fallback —
+            # a $10k default on a smaller real account oversizes every order,
+            # and the old print() fallback was invisible to the deploy gate.
+            if not self.paper_trading:
+                raise SystemExit(
+                    "LIVE ABORT: no USD/USDT balance found on Kraken — "
+                    "refusing to size positions off the "
+                    f"${fallback:,.2f} config fallback."
+                )
             print(f"  No USD balance found on Kraken, using config fallback: ${fallback:.2f}")
             return fallback
 
+        except SystemExit:
+            raise
         except Exception as e:
+            if not self.paper_trading:
+                raise SystemExit(
+                    f"LIVE ABORT: could not fetch Kraken balance ({e}) — "
+                    "refusing to trade real money off the "
+                    f"${fallback:,.2f} config fallback."
+                )
             print(f"  Could not fetch Kraken balance ({e}), using fallback: ${fallback:.2f}")
             return fallback
 
@@ -396,6 +421,16 @@ class ScalpingTrader:
             try:
                 with open(state_file) as f:
                     state = json.load(f)
+                # LIVE must never inherit a PAPER ledger: paper capital would
+                # drive real position sizing (~2.6x oversize on a smaller real
+                # account) and paper positions would be treated as real. The
+                # deploy script's --fresh wipes this; hard-stop if forgotten.
+                if not self.paper_trading and state.get('paper_trading', False):
+                    raise SystemExit(
+                        f"LIVE ABORT: {state_file} was written by PAPER trading. "
+                        "Its capital/positions must not carry into live. "
+                        "Deploy with --fresh (wipes data/scalping) or move the file."
+                    )
                 self.positions = state.get('positions', {})
                 # Load persisted metrics but keep this process's start_time
                 # so "Uptime" reflects how long the trader has been running,
@@ -1857,10 +1892,30 @@ class ScalpingTrader:
                         self.logger.error(f"Skipping {pair} entry — order execution failed")
                         return
                     fill_price = order_result.get('fill_price', current_price)
+                    filled_volume = order_result.get('fill_volume', size)
+                    # Partial fill kept at filled size: the LEDGER must match.
+                    # Recording the full intended notional against a partial
+                    # fill misstates P&L and deployed capital. Volume-ratio
+                    # scaling keeps the full-fill path byte-identical (replay
+                    # parity). Dust fills (<$10 notional) are not adoptable —
+                    # they may sit below the pair's ordermin and would be
+                    # unexitable forever; shorts get flattened by the next
+                    # startup reconciliation, dust spot coins are abandoned.
+                    if filled_volume <= 0 or filled_volume * fill_price < 10.0:
+                        self.logger.critical(
+                            f"DUST FILL on {pair} entry — not adopting as a "
+                            f"position (filled {filled_volume} @ ${fill_price}). "
+                            "If this was a margin short, startup reconciliation "
+                            "will flatten it; otherwise close manually.",
+                            pair=pair, side=pos_side,
+                        )
+                        return
+                    if filled_volume < size * 0.999:
+                        size_usd = size_usd * (filled_volume / size)
                     self.positions[pair] = {
                         'entry_price': fill_price,
                         'side': pos_side,
-                        'size': order_result.get('fill_volume', size),
+                        'size': filled_volume,
                         'size_usd': size_usd,
                         'entry_time': datetime.now(timezone.utc).isoformat(),
                         # Candle timestamp at entry — used to measure margin hold
