@@ -123,10 +123,15 @@ indicators:
     tp_multiplier: 2.75
     use_dynamic_stops: true
 
-# Trailing stops — disabled because current params were optimized without them.
-# Enable for backtesting/optimization experiments only.
+# Trailing stops — DECISIVELY REJECTED (Jul 2026 A/B, 4-quarter replay):
+#   enabled 0.5/0.5 (these defaults): total +$1,837 (-$2,685 vs baseline)
+#   enabled 0.75/0.25 (conservative):  total +$2,230 (-$2,292 vs baseline)
+# Mechanism: trailing cuts ATR-sized winners at 50-75% of TP progress, then
+# the freed capital churns re-entries (Q4 trades 43->61, WR 65%->54%). Hold-
+# time forensics show profit accrues LATE (80-120h shorts run 95% WR) — any
+# hold-truncating exit fights the strategy's core edge. Do not enable.
 trailing_stops:
-  enabled: false          # Set true to activate trailing stop logic
+  enabled: false          # REJECTED -$2.3k..-$2.7k/4qtrs — see A/B above
   trail_trigger_pct: 0.5  # Start trailing at 50% of TP progress
   trail_lock_pct: 0.5     # Lock in 50% of peak unrealized profit
 
@@ -171,15 +176,24 @@ live:
   concurrent_pairs: 1
 
 # Short selling configuration
+#
+# Short-side A/Bs REJECTED (Jul 2026, 4-quarter replay) — do not retread:
+#   - Rollover-decayed short TP (TP shrinks 0.12-0.36%/day held): best +$314,
+#     refuted as overfit — gain is single-quarter-concentrated and the source
+#     quarter migrates with the knob value (0.12 gains via Q1'26, 0.36 via
+#     Q2'26). Inside the +/-$1k noise band.
+#   - Pair-local trend veto (skip short when the pair's own SMA-20 slope is
+#     rising): +$96 at 0.02 threshold, -$743 at 0.0. Forensics: rising-slope
+#     shorts lose only in chop quarters (-$349 Q1'25, -$550 Q2'26) but WIN in
+#     trend quarters (+$327 Q1'26, +$162 Q4). Quarter-dependent sign = noise.
 shorting:
   enabled: true
   min_confirmations: 3
   # Kraken spot shorts are margin orders; the exchange requires leverage >= 2
   # to open one. Position SIZE is unchanged (volume is set by the strategy) —
-  # leverage only determines collateral. NOTE: Kraken charges a margin
-  # rollover fee (~0.02% per 4h) on open margin positions; neither paper
-  # trading nor replay models it, so multi-day shorts cost ~0.12%/day more
-  # in live than simulated.
+  # leverage only determines collateral. Kraken charges a margin rollover fee
+  # (~0.02% per 4h) on open margin positions; v13 models it in paper/replay
+  # too (fees.margin_rollover_percent_4h), so sim matches live.
   leverage: 2
 
 # Trading pairs — ordered by realistic validated performance
@@ -459,6 +473,13 @@ risk:
   # quarter improved -$1,616 -> -$1,037, single-trade loss capped ~-10%.
   # Set 0 to disable.
   disaster_stop_percent: 10.0
+  # MAX-HOLD TIME STOPS REJECTED (Jul 2026 A/B, 4-quarter replay): 80h -$1,920,
+  # 120h -$1,270, 160h -$1,046, 120h-shorts-only -$1,080. Hold-time forensics:
+  # P&L per trade RISES with hold time — 80-120h shorts run a 95% WR (+$1,703),
+  # trades >120h sum +$2,362 over 57 trades. The bleed is actually the SHORTEST
+  # bucket (<40h shorts -$917 via 30 fast stop-losses = weak ENTRIES, not slow
+  # exits). Time stops crystallize drawdowns that would mean-revert, then churn
+  # the freed capital at a worse win rate. Do not add one below ~160h.
 
 # Fees
 fees:
@@ -519,6 +540,16 @@ regime_detector:
   block_entry_regimes: []
   block_short_regimes:
     - sideways
+
+  # REGIME-ADVERSE SHORT EXIT REJECTED (Jul 2026 A/B, 4-quarter replay):
+  # force-closing open shorts when the regime turns BULL/SIDEWAYS costs
+  # -$3,411 (immediate) / -$1,570 (10-candle grace), regressing ALL quarters.
+  # Forensics on 60 stranded shorts: they earned +$2,027 AFTER the flip
+  # (36/57 gained post-flip) — the slow 20-candle regime cadence prints
+  # flips near local tops, exactly where 4h mean reversion favors holding
+  # the short. The live SOL -12.27% bleed (Jun 2026) was the tail case the
+  # disaster stop exists for, not the norm. Regime gates must only ever
+  # block NEW entries; never manage existing positions.
 
 # EMA trend filter threshold (filter on/off is controlled per-regime by
 # REGIME_ADJUSTMENTS in regime_detector.py, not by config)
