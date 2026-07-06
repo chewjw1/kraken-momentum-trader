@@ -71,6 +71,12 @@ class ScalpingTrader:
         use_maker = self.config.get('execution', {}).get('use_maker_orders', True)
         fee_rate = self.config.get('fees', {}).get('maker_percent', 0.16) if use_maker else self.config.get('fees', {}).get('taker_percent', 0.26)
 
+        # Paper fills must pay the CONFIGURED fees, not the client's
+        # hardcoded standard-tier defaults, or paper P&L silently desyncs
+        # from config on any fee change (found in the Jul 2026 fee A/B).
+        self.client._paper_maker_fee = self.config.get('fees', {}).get('maker_percent', 0.16) / 100.0
+        self.client._paper_taker_fee = self.config.get('fees', {}).get('taker_percent', 0.26) / 100.0
+
         # Read indicators section as defaults (matches backtest config construction)
         ind = self.config.get('indicators', {})
         rsi_cfg = ind.get('rsi', {})

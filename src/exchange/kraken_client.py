@@ -186,6 +186,11 @@ class KrakenClient:
         self._paper_orders: dict[str, Order] = {}
         self._paper_order_counter = 0
         self._paper_balances_initialized = False
+        # Paper fill fees as fractions; the trader overrides these from
+        # config (fees.maker_percent/taker_percent) so paper P&L tracks any
+        # fee-structure change instead of these standard-tier defaults.
+        self._paper_maker_fee = 0.0016
+        self._paper_taker_fee = 0.0026
 
         # Per-pair trading constraints from AssetPairs (price/volume precision,
         # order minimums, allowed margin leverage). Lazy cache.
@@ -931,8 +936,13 @@ class KrakenClient:
 
         # Calculate cost
         cost = volume * price
-        # Use maker fee (0.16%) for limit/post-only orders, taker fee (0.26%) for market
-        fee_rate = 0.0016 if (order_type == OrderType.LIMIT or post_only) else 0.0026
+        # Maker fee for limit/post-only orders, taker for market. Rates are
+        # settable attributes so the trader can wire them from config
+        # (fees.maker_percent/taker_percent); defaults match Kraken's
+        # standard tier. getattr guards subclasses that skip __init__.
+        fee_rate = (getattr(self, '_paper_maker_fee', 0.0016)
+                    if (order_type == OrderType.LIMIT or post_only)
+                    else getattr(self, '_paper_taker_fee', 0.0026))
         fee = cost * fee_rate
 
         # Check balance

@@ -53,6 +53,12 @@ class ReplayKrakenClient(KrakenClient):
         self._current_idx = 0
         # How many candles to serve per get_ohlc call (lookback window)
         self._lookback = 540
+        # Fill fee as a FRACTION (0.0016 = 0.16% maker). Overridden from the
+        # trader's configured fee rate after construction so config fee
+        # changes (fees.maker_percent) affect replay fills, not just the
+        # strategy's entry gate. Found in the Jul 2026 zero-fee A/B: this was
+        # the only fee actually deducted from replay P&L.
+        self._fill_fee_rate = 0.0016
 
     def get_ohlc(self, pair: str, interval: int = 240, since=None) -> list[OHLC]:
         pair_key = pair.replace("/", "_")
@@ -95,7 +101,7 @@ class ReplayKrakenClient(KrakenClient):
         else:
             fill_price *= 0.9995
 
-        fee = fill_price * volume * 0.0016  # 0.16% maker fee
+        fee = fill_price * volume * self._fill_fee_rate
 
         return Order(
             order_id=f"REPLAY-{self._paper_order_counter}",
@@ -174,6 +180,9 @@ def main():
     trader.client = mock_client
     trader.capital = 10000.0
     trader.initial_capital = 10000.0
+    # Fills pay the configured fee (percent -> fraction). Byte-identical to
+    # the old hardcoded 0.0016 at the default maker 0.16%.
+    mock_client._fill_fee_rate = trader.fee_rate / 100.0
 
     # Track events for reporting
     events = []

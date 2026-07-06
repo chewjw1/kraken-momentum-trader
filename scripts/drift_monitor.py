@@ -101,6 +101,7 @@ def run_replay(data_dir: Path, config_path: str) -> dict:
     KrakenClient.__init__ = oi
     trader.client = client
     trader.capital = trader.initial_capital = 10000.0
+    client._fill_fee_rate = trader.fee_rate / 100.0
 
     for i in range(num_candles):
         client._current_idx = i

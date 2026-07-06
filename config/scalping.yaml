@@ -68,6 +68,11 @@ strategy:
   take_profit_percent: 4.5    # Static fallback — ATR dynamic TP preferred
   stop_loss_percent: 2.5      # Static fallback — ATR dynamic SL preferred
   min_confirmations: 3        # Minimum confirmations for long entry
+  # NOTE: the indicator early-exit profit gate (exit rules fire only above
+  # tp*0.75, hardcoded in scalping_strategy.py) was swept Jul 2026:
+  # 0.5 -> -$2,922 (premature exits truncate late-accruing P&L), 0.9 ->
+  # +$176 (noise, regresses Q1'26 -$500), 1.0/disabled -> +$51 (the six
+  # early-exit rules are collectively ~neutral). 0.75 confirmed; keep.
 
 # Core oscillators (defaults)
 indicators:
@@ -186,6 +191,13 @@ live:
 #     rising): +$96 at 0.02 threshold, -$743 at 0.0. Forensics: rising-slope
 #     shorts lose only in chop quarters (-$349 Q1'25, -$550 Q2'26) but WIN in
 #     trend quarters (+$327 Q1'26, +$162 Q4). Quarter-dependent sign = noise.
+#   - Carry-aware short entry gate (charge expected rollover at the entry
+#     fee check): NULL EFFECT, byte-identical results — ATR dynamic TPs are
+#     always far above fees+carry+0.5%, so the gate never binds. Dead end.
+#   - 12h-pair short confirmations 2->3: uniform raise +$46 (nothing);
+#     ATOM+POL-only subset +$414 with 0 regressions but the subset was
+#     chosen post-hoc after seeing SOL/AVAX hurt — textbook subset fit,
+#     not adopted.
 shorting:
   enabled: true
   min_confirmations: 3
@@ -198,6 +210,13 @@ shorting:
 
 # Trading pairs — ordered by realistic validated performance
 # Each pair uses its best-performing interval (4h or 12h)
+#
+# PAIR PRUNING REJECTED (Jul 2026 A/B): dropping "fee-noise" pairs by
+# standalone PF backfires — drop POL: -$1,020; drop POL+XRP+BTC: -$1,191.
+# In the INTEGRATED shared-capital replay those pairs are diversifiers:
+# POL +$1,020 (positive all 4 quarters), XRP +$823, BTC +$1,386 — BTC's
+# +$1,158 in Q1'25 was the largest single-pair contribution in the worst
+# quarter. Standalone PF does not equal integrated contribution. Keep 10.
 pairs:
   - AVAX/USD   # 12h — +216%, PF 1.68, DD 13.5%
   - NEAR/USD   # 4h  — +123%, PF 1.27, DD 14.9%
@@ -482,6 +501,18 @@ risk:
   # the freed capital at a worse win rate. Do not add one below ~160h.
 
 # Fees
+#
+# FEE DRAG QUANTIFIED (Jul 2026 A/B, 4-quarter replay): zero fees would be
+# worth +$1,454/4qtrs (all 4 quarters improve, near-linear response: half
+# fees recover ~45%) — i.e. fees consume ~32% of net edge on ~290 trades.
+# Kraken+ ($4.99/mo "0% fees") does NOT apply: it covers consumer app
+# Buy/Sell/Convert only, EXCLUDES Kraken Pro/API trading (this bot), and
+# caps at $10K/mo vs our ~$75K/mo notional. docs/strategy-research-summary
+# .md's Feb 2026 claim is stale/wrong. The real levers are Kraken Pro
+# 30-day-volume fee tiers ($10K+/mo -> 0.14/0.24) and keeping maker-only
+# discipline. If billed rates change, update these values — replay fills,
+# paper fills, and the entry gate all read them (wired Jul 2026; replay
+# and paper previously hardcoded 0.16/0.26).
 fees:
   maker_percent: 0.16
   taker_percent: 0.26
