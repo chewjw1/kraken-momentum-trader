@@ -16,7 +16,7 @@ import os
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Kraken pair names (API format → display format)
 PAIRS = {
@@ -147,10 +147,42 @@ def pull_pair(kraken_pair: str, display_name: str, start_dt: datetime,
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="Pull Kraken 4h OHLCV for the strategy's 10 pairs. "
+                    "With no window args, pulls the hardcoded PERIODS "
+                    "(q4_2024, q1_2026) — original behavior.")
+    parser.add_argument("--days", type=int, default=0,
+                        help="pull the last N days ending now (e.g. 90 for a "
+                             "drift-monitor window)")
+    parser.add_argument("--start", default=None, help="window start YYYY-MM-DD")
+    parser.add_argument("--end", default=None,
+                        help="window end YYYY-MM-DD (default: now)")
+    parser.add_argument("--output", default=None,
+                        help="output dir (required with --days/--start), "
+                             "e.g. data/paper_window")
+    args = parser.parse_args()
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    for period_name, period in PERIODS.items():
-        output_dir = os.path.join(script_dir, "data", period_name)
+    if args.days or args.start:
+        if not args.output:
+            parser.error("--output is required with --days/--start")
+        now = datetime.now(timezone.utc)
+        if args.start:
+            start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        else:
+            start = now - timedelta(days=args.days)
+        end = (datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+               if args.end else now)
+        periods = {os.path.basename(args.output.rstrip("/")): {"start": start, "end": end}}
+        out_base = os.path.dirname(os.path.abspath(args.output)) or script_dir
+    else:
+        periods = PERIODS
+        out_base = os.path.join(script_dir, "data")
+
+    for period_name, period in periods.items():
+        output_dir = os.path.join(out_base, period_name)
         os.makedirs(output_dir, exist_ok=True)
 
         print(f"\n{'=' * 60}")
@@ -169,8 +201,7 @@ def main():
         print(f"\n  Total: {total_candles} candles for {period_name}")
 
     print(f"\n{'=' * 60}")
-    print("  Done! Upload the data/ directory to Google Drive")
-    print("  and share the link.")
+    print("  Done.")
     print(f"{'=' * 60}")
 
 
